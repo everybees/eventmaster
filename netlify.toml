@@ -7,6 +7,10 @@
   NODE_VERSION = "22"
   # mongodb-memory-server is only for tests; don't download a 140 MB MongoDB binary on every build
   MONGOMS_DISABLE_POSTINSTALL = "1"
+  # MONGODB_DB is just the database name ("wpg_events", also the code's default), not a secret;
+  # without this, Netlify's secrets scan fails the build on finding that name in the code.
+  # MONGODB_URI stays scanned: its value must never appear in the repo.
+  SECRETS_SCAN_OMIT_KEYS = "MONGODB_DB"
 
 [functions]
   node_bundler = "esbuild"
