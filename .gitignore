@@ -1,0 +1,22 @@
+# dependencies and builds
+node_modules/
+web/dist/
+dev-dist/
+.netlify/
+
+# local settings and data
+.env
+.env.*
+!.env.example
+.mongo-data/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# crawler output when run by hand (python3 crawler/events.py)
+winnipeg_events.csv
+winnipeg_events.json
+
+.DS_Store

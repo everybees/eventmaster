@@ -1,33 +1,40 @@
 #!/usr/bin/env python3
 """
-winnipeg_events.py — pull upcoming Winnipeg events from several sources into one list.
+events.py — pull upcoming Winnipeg events from several sources into one list.
 
 Sources:
   - Eventbrite (public discovery pages, schema.org JSON-LD)
   - AllEvents.in (aggregates many public Facebook events)
   - Tourism Winnipeg
   - True North / Canada Life Centre & Burton Cummings Theatre
+  - Movies & film: Eventbrite/AllEvents film pages and the Cinematheque (screenings), and
+    CinemaClock for showtimes at Winnipeg cinemas (Cineplex, Landmark, Cinema City, Garden City)
   - Ticketmaster Discovery API (optional, free key: TICKETMASTER_API_KEY)
   - Any extra page you pass with --url (works on most sites using schema.org Event markup)
 
 Standard library only — no pip installs needed.
 
 Usage:
-  python3 winnipeg_events.py                      # next 30 days
-  python3 winnipeg_events.py --days 7 --pages 3
-  python3 winnipeg_events.py --search "afrobeats"
-  python3 winnipeg_events.py --category music --category arts   # matches category names or tags
-  python3 winnipeg_events.py --category holiday                 # tags: holiday, family, ongoing
-  TICKETMASTER_API_KEY=xxxx python3 winnipeg_events.py
-  python3 winnipeg_events.py --url https://some-venue.ca/events
+  python3 crawler/events.py                      # next 30 days
+  python3 crawler/events.py --days 7 --pages 3
+  python3 crawler/events.py --search "afrobeats"
+  python3 crawler/events.py --category music --category arts   # matches category names or tags
+  python3 crawler/events.py --category holiday                 # tags: holiday, family, ongoing
+  TICKETMASTER_API_KEY=xxxx python3 crawler/events.py
+  python3 crawler/events.py --category movies
+  python3 crawler/events.py --url https://some-venue.ca/events
 """
-import argparse, collections, csv, html, json, os, re, sys, time
+import argparse, collections, csv, hashlib, html, json, os, re, sys, time
 import urllib.request, urllib.parse
 from datetime import datetime, timedelta, timezone
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-LOCAL_TZ = timezone(timedelta(hours=-6))  # Winnipeg CST (close enough for filtering)
+try:
+    from zoneinfo import ZoneInfo
+    LOCAL_TZ = ZoneInfo("America/Winnipeg")
+except Exception:  # no tz database available
+    LOCAL_TZ = timezone(timedelta(hours=-5))  # Manitoba has stayed on UTC-5 since Nov 2026 (tzdata 2026f)
 
 # name -> list of URL templates; {page} is replaced for paginated sources
 JSONLD_SOURCES = {
@@ -35,7 +42,16 @@ JSONLD_SOURCES = {
     "AllEvents (incl. Facebook events)": ["https://allevents.in/winnipeg/all?page={page}"],
     "Tourism Winnipeg": ["https://www.tourismwinnipeg.com/events"],
     "True North (Canada Life Centre etc.)": ["https://www.tnse.com/events/"],
+    # film screenings; the general pages above miss most of them
+    "Eventbrite (film)": ["https://www.eventbrite.ca/d/canada--winnipeg/film-and-media--events/?page={page}"],
+    "AllEvents (movies & film)": ["https://allevents.in/winnipeg/movies?page={page}",
+                                  "https://allevents.in/winnipeg/film?page={page}"],
+    "Cinematheque (Winnipeg Film Group)": ["https://winnipegfilmgroup.com/cinematheque/"],
 }
+# used when a source's markup leaves the venue out
+SOURCE_VENUES = {"Cinematheque (Winnipeg Film Group)": ("Dave Barber Cinematheque", "100 Arthur St")}
+# "Otium - 11/22/26 @ 3:00 pm": the Cinematheque puts each showtime in the title
+SHOWTIME_SUFFIX_RE = re.compile(r" - \d{1,2}/\d{1,2}/\d{2,4} ?@ ?\d{1,2}:\d{2} ?[ap]m$", re.I)  # on clean()ed titles
 
 
 def fetch(url, timeout=25):
@@ -79,6 +95,13 @@ def iter_ld_events(node):
 def first(v):
     return v[0] if isinstance(v, list) and v else v
 
+def image_url(v):
+    """schema.org image: a URL, a list of them, or an ImageObject."""
+    v = first(v)
+    if isinstance(v, dict):
+        v = v.get("url") or v.get("contentUrl")
+    return v if isinstance(v, str) and v.startswith("http") else ""
+
 def norm_ld(ev, source):
     loc = first(ev.get("location")) or {}
     venue, addr = "", ""
@@ -103,7 +126,7 @@ def norm_ld(ev, source):
     elif free_flag in (False, "false", "False", "https://schema.org/False") and not price:
         price = "Paid (price not listed)"
     return {
-        "title": clean(ev.get("name")),
+        "title": SHOWTIME_SUFFIX_RE.sub("", clean(ev.get("name"))),
         "start": ev.get("startDate", ""),
         "end": ev.get("endDate", ""),
         "venue": clean(venue),
@@ -112,6 +135,7 @@ def norm_ld(ev, source):
         "url": first(ev.get("url")) or "",
         "source": source,
         "description": clean(ev.get("description")),
+        "image": image_url(ev.get("image")),
     }
 
 def scrape_jsonld(url, source):
@@ -122,6 +146,9 @@ def scrape_jsonld(url, source):
         except json.JSONDecodeError:
             continue
         out += [norm_ld(e, source) for e in iter_ld_events(data)]
+    for e in out:
+        if not e["venue"] and source in SOURCE_VENUES:
+            e["venue"], e["address"] = SOURCE_VENUES[source]
     return out
 
 
@@ -145,6 +172,8 @@ def ticketmaster(start, end, keyword=None):
         v = (e.get("_embedded", {}).get("venues") or [{}])[0]
         pr = (e.get("priceRanges") or [{}])[0]
         segment = ((e.get("classifications") or [{}])[0].get("segment") or {}).get("name", "")
+        # widest 16:9 image, else the widest of any shape
+        imgs = sorted(e.get("images") or [], key=lambda i: (i.get("ratio") == "16_9", i.get("width") or 0))
         out.append({
             "title": e.get("name", ""),
             "start": d.get("dateTime") or d.get("localDate", ""),
@@ -155,9 +184,150 @@ def ticketmaster(start, end, keyword=None):
             "url": e.get("url", ""),
             "source": "Ticketmaster",
             "description": "",
+            "image": imgs[-1].get("url", "") if imgs else "",
             "category_hint": TM_SEGMENTS.get(segment),
         })
     return out
+
+
+# ---------- CinemaClock: showtimes at Winnipeg cinemas ----------
+# Cineplex's own site is off limits: its robots.txt disallows every crawler but search engines,
+# and its showtimes come from a private API. CinemaClock lists the same showtimes (plus Landmark
+# and the independents) and allows crawling.
+CINEMACLOCK = "https://www.cinemaclock.com"
+CINEMACLOCK_THEATRES = [  # Winnipeg proper; the Cinematheque has its own source above
+    "scotiabank-theatre-winnipeg", "cineplex-odeon-mcgillivray-vip", "cineplex-junxion-kildonan-place",
+    "silvercity-st-vital", "landmark-grant-park", "cinema-city-northgate", "garden-city-cinemas",
+]
+CC_BLOCK_RE = re.compile(r'<div id="moviecin[^"]*" class="showtimeblock')
+CC_TITLE_RE = re.compile(r"<h3 class='movietitle[^']*'[^>]*><a[^>]*href='(/movies/[^']+)'>(.*?)</a>")
+CC_POSTER_RE = re.compile(r"data-src='/images/posters/140x210(/[^']+)'")
+CC_INFO_RE = re.compile(r"<p class='moviegenre'>(.*?)</p>", re.S)
+CC_RATING_RE = re.compile(r"<span class='rtMB'>([^<]+)</span>")
+CC_CAST_RE = re.compile(r"<span class='avec'>(.*?)</span>")
+CC_GROUP_RE = re.compile(r'<div data-earliest-date="(\d{8})"')
+CC_FORMAT_RE = re.compile(r'<p class="timesalso">([^<]*)<')
+CC_DAY_RE = re.compile(r'<span class="timesdate">([A-Z][a-z]{2}) (\d{1,2})</span></u><i>(.*?)</i>', re.S)
+CC_TIME_RE = re.compile(r'data-time="(\d{1,2})(\d{2})"')
+CC_SYNOPSIS_RE = re.compile(r'<p id="synopsis"[^>]*>(.*?)</p>', re.S)
+MONTHS = {m: i for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
+FORMATS = ("IMAX", "ScreenX", "UltraAVX", "D-BOX", "4DX", "VIP", "3D")
+
+def hm(h, m):
+    return datetime(2000, 1, 1, h % 24, m).strftime("%I:%M %p").lstrip("0")
+
+def cc_showings(block):
+    """{date: {(hour, minute), ...}} and the screen formats, from one movie's block."""
+    shows, formats = {}, set()
+    parts = CC_GROUP_RE.split(block)  # [before, yyyymmdd, group, yyyymmdd, group, ...]
+    for earliest, grp in zip(parts[1::2], parts[2::2]):
+        year, first_month = int(earliest[:4]), int(earliest[4:6])
+        fmt = CC_FORMAT_RE.search(grp)
+        fmt = clean(fmt.group(1)) if fmt else ""
+        formats.update(f for f in FORMATS if f in fmt)
+        if "subt" in fmt:
+            formats.add("subtitled")
+        for mon, day, inner in CC_DAY_RE.findall(grp):
+            month = MONTHS[mon]
+            date = datetime(year + (month < first_month), month, int(day)).date()  # Dec → Jan rolls the year
+            shows.setdefault(date, set()).update((int(h), int(m)) for h, m in CC_TIME_RE.findall(inner))
+    return shows, formats
+
+def cc_theatre(slug):
+    """One cinema's name, street address and movies (with their showings)."""
+    page = fetch(f"{CINEMACLOCK}/movie-theaters/{slug}")
+    name, addr = slug.replace("-", " ").title(), ""
+    for block in LDJSON_RE.findall(page):
+        try:
+            d = json.loads(block.strip())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(d, dict) and d.get("@type") == "MovieTheater":
+            name, addr = d.get("name") or name, (d.get("address") or {}).get("streetAddress", "")
+    starts = [m.start() for m in CC_BLOCK_RE.finditer(page)] + [len(page)]
+    movies = []
+    for a, b in zip(starts, starts[1:]):
+        blk = page[a:b]
+        t = CC_TITLE_RE.search(blk)
+        if not t:
+            continue
+        info = CC_INFO_RE.search(blk)
+        info = info.group(1) if info else ""
+        rating, cast, poster = CC_RATING_RE.search(info), CC_CAST_RE.search(info), CC_POSTER_RE.search(blk)
+        shows, formats = cc_showings(blk)
+        movies.append({
+            "path": t.group(1), "title": clean(t.group(2)), "shows": shows, "formats": formats,
+            # runtime, genre, weeks out: what is left once ratings, cast and comments are removed
+            "info": clean(re.sub(r"<span class='rt[A-Z]+'>[^<]*</span>|<span class='avec'>.*?</span>|<!--.*?-->",
+                                 " ", info)),
+            "rating": clean(rating.group(1)) if rating else "",
+            "cast": clean(cast.group(1)) if cast else "",
+            "poster": f"{CINEMACLOCK}/images/posters/1000x1500{poster.group(1)}" if poster else "",
+            "family": bool(re.search(r"class='movieblock[^']*\bgen(fam|ani)\b", blk)),
+        })
+    return name, addr, movies
+
+def cinemaclock(delay):
+    """One row per film now showing, with the next day's times at each cinema showing it."""
+    films = {}
+    for slug in CINEMACLOCK_THEATRES:
+        try:
+            name, addr, movies = cc_theatre(slug)
+        except Exception as ex:
+            print(f"  ! CinemaClock {slug}: {ex}", file=sys.stderr)
+            continue
+        finally:
+            time.sleep(delay)
+        for m in movies:
+            f = films.setdefault(m["path"], dict(m, cinemas={}, formats=set()))
+            f["formats"] |= m["formats"]
+            if m["shows"]:
+                f["cinemas"][name] = (addr, m["shows"])
+    rows = []
+    for path, f in films.items():
+        if f["cinemas"]:
+            rows.append(cc_film_row(path, f, cc_synopsis(path)))
+            time.sleep(delay)
+    return rows
+
+def cc_synopsis(path):
+    """The synopsis is only on the film's own page."""
+    try:
+        s = CC_SYNOPSIS_RE.search(fetch(CINEMACLOCK + path))
+    except Exception:
+        return ""
+    return clean(s.group(1)) if s else ""
+
+def cc_film_row(path, f, synopsis):
+    cinemas = sorted(f["cinemas"])
+    dates = sorted(d for _, shows in f["cinemas"].values() for d in shows)
+    nxt = []
+    for c in cinemas:
+        shows = f["cinemas"][c][1]
+        day = min(shows)
+        nxt.append(f"{c} ({day:%a %b} {day.day}): " + ", ".join(hm(h, m) for h, m in sorted(shows[day])))
+    details = " · ".join(filter(None, [f["info"], f"Rated {f['rating']}" if f["rating"] else "",
+                                       ", ".join(sorted(f["formats"])), f"With {f['cast']}" if f["cast"] else ""]))
+    return {
+        "title": f["title"],
+        "start": dates[0].isoformat(),
+        "end": dates[-1].isoformat() if dates[-1] > dates[0] else "",
+        "venue": cinemas[0] if len(cinemas) == 1 else f"{len(cinemas)} cinemas",
+        "address": f["cinemas"][cinemas[0]][0] if len(cinemas) == 1 else ", ".join(cinemas),
+        "price": "",
+        "url": CINEMACLOCK + path,
+        "source": "CinemaClock (cinema showtimes)",
+        "description": f"{details}. {synopsis}" if synopsis else details,
+        "image": f["poster"],
+        "category_hint": "Movies & Film",
+        "tag_hints": ["family"] if f["family"] else [],
+        "showtimes": " | ".join(nxt),  # each cinema's next day with showings
+        # the whole week, structured, for the database
+        "_showtimes": [{"cinema": c, "address": f["cinemas"][c][0], "date": d.isoformat(),
+                        "times": [f"{h % 24:02d}:{m:02d}" for h, m in sorted(f["cinemas"][c][1][d])]}
+                       for c in cinemas for d in sorted(f["cinemas"][c][1])],
+    }
 
 
 # ---------- helpers ----------
@@ -172,7 +342,12 @@ def parse_dt(s):
             dt = datetime.strptime(s[:10], "%Y-%m-%d")
         except ValueError:
             return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=LOCAL_TZ)
+    if dt.tzinfo and not dt.utcoffset():
+        return dt.astimezone(LOCAL_TZ)  # UTC, e.g. Ticketmaster
+    # Local listings: keep the wall-clock time as written. Sources disagree on Winnipeg's offset
+    # since Manitoba stopped changing clocks in Nov 2026 (Eventbrite still sends -06:00,
+    # Burton Cummings and the Cinematheque -05:00), and converting would shift some by an hour.
+    return dt.replace(tzinfo=LOCAL_TZ)
 
 FREE_WORDS = re.compile(r"\b(free|no cover|no charge|pay what you can|pwyc)\b", re.I)
 
@@ -194,6 +369,17 @@ def dedupe_key(e):
     dt = e["_dt"].astimezone(LOCAL_TZ).date().isoformat() if e["_dt"] else ""
     return title, dt
 
+def stable_id(e):
+    """The same event gets the same ID on every run, whichever source happened to list it first,
+    so saved events and interaction history survive re-crawls. Films are keyed by their CinemaClock
+    page, exhibitions and other ongoing runs by title, everything else by title + date."""
+    if e.get("source", "").startswith("CinemaClock"):
+        key = e["url"]
+    else:
+        title, date = dedupe_key(e)
+        key = f"{title}|{'ongoing' if 'ongoing' in e.get('tags', ()) else date}"
+    return "evt_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+
 
 # ---------- categorization ----------
 def _rx(p):
@@ -205,6 +391,9 @@ def _rx(p):
 CATEGORY_RULES = [
     ("Sports & Outdoors", _rx(r"\bvs\.?\b|\bversus\b|\b(jets|moose|bombers|valour|goldeyes)\b|fat bike|"
                               r"\b(run|marathon|5k|10k)\b|hockey|curling|\bski(ing)?\b")),
+    # before Social ("Movie Night"), Family (kids' matinees) and Food ("Dinner and a Movie")
+    ("Movies & Film", _rx(r"\b(film|movie)s?\b|фільм|cinema|\bscreenings?\b|matinee|double feature|"
+                          r"feature night|documentary|\b4k\b|restoration|\bimax\b")),
     ("Social, Dating & Games", _rx(r"speed dating|\bsingles?\b|\bdating\b|new friends|dinner club|"
                                    r"\bmeet-?up\b|trivia|pub quiz|board games?|game night|bingo")),
     ("Markets & Fairs", _rx(r"\bmarkets?\b|bazaar|craft (fair|sale|show)|christkindl|\bvendors?\b|flea")),
@@ -224,7 +413,7 @@ CATEGORY_RULES = [
                              r"afrobeats?|reggae|metal|punk|\bfolk\b|country|bluegrass|open mic")),
     ("Arts & Theatre", _rx(r"theat(re|er)|\bplay\b|recital|ballet|\bdance\b(?!\s+(party|night))|cabaret|"
                            r"opera|showing|improv|comed(y|ian)|stand-?up|\bdrag\b|musical|presentations|"
-                           r"nutcracker|\b(film|movie)s?\b|cinema|poetry|cirque|circus|aerial")),
+                           r"nutcracker|poetry|cirque|circus|aerial")),
     ("Community & Fundraisers", _rx(r"fundrais|['’]s social\b|\bgala\b|\bball\b|anniversary|parade|posada|"
                                     r"charity|\bbenefit\b|foundation|celebration|pow ?wow")),
     ("Nightlife & Parties", _rx(r"part(y|ies)|\bbash\b|takeover|nightlife|club night|extravaganza|\brave\b|"
@@ -234,6 +423,7 @@ CATEGORY_RULES = [
 ]
 # Fallback when the title says nothing; only venues that mostly host one kind of event.
 VENUE_RULES = [
+    ("Movies & Film", _rx(r"cinema|cinematheque|imax|cineplex")),
     ("Music & Concerts", _rx(r"park theatre|times change|burton cummings|concert hall|"
                              r"west end cultural|club regent")),
     ("Nightlife & Parties", _rx(r"pyramid cabaret|nightlife")),
@@ -241,7 +431,7 @@ VENUE_RULES = [
     ("Exhibitions & Attractions", _rx(r"art gallery|museum|qaumajuq|\bthe leaf\b|fortwhyte|assiniboine park")),
 ]
 TM_SEGMENTS = {"Music": "Music & Concerts", "Sports": "Sports & Outdoors", "Arts & Theatre": "Arts & Theatre",
-               "Film": "Arts & Theatre", "Family": "Family & Kids"}
+               "Film": "Movies & Film", "Family": "Family & Kids"}
 CATEGORIES = [c for c, _ in CATEGORY_RULES]  # anything unmatched is "Other"
 # catch a typo'd category name, which would otherwise silently become a new category
 assert {c for c, _ in VENUE_RULES} | set(TM_SEGMENTS.values()) <= set(CATEGORIES)
@@ -265,7 +455,7 @@ def categorize(e):
     tags = []
     if HOLIDAY_RE.search(title):
         tags.append("holiday")
-    if cat == "Family & Kids" or FAMILY_RE.search(title):
+    if cat == "Family & Kids" or FAMILY_RE.search(title) or "family" in e.get("tag_hints", ()):
         tags.append("family")
     if e.get("_dt") and e.get("_end") and e["_end"] - e["_dt"] >= timedelta(days=2):
         tags.append("ongoing")  # multi-day run, e.g. a gallery exhibition
@@ -282,6 +472,8 @@ def wanted(e, a, now, end):
     if e["_dt"]:
         # keep anything still running during the window, not only things that start in it
         last = max(e["_dt"], e["_end"] or e["_dt"])
+        if len((e["end"] if e["_end"] else e["start"]).strip()) == 10:
+            last += timedelta(days=1)  # a bare date lasts all day, rather than ending at midnight
         if e["_dt"] > end or last < now - timedelta(hours=6):
             return False
     if a.search and a.search.lower() not in (e["title"] + " " + e["venue"]).lower():
@@ -307,13 +499,40 @@ def select_events(events, a, now, end):
         elif ongoing:
             kept = seen[k]
             kept["_dt"], kept["_end"] = min(kept["_dt"], e["_dt"]), max(kept["_end"], e["_end"])
+        elif e["_dt"] and seen[k]["_dt"] and e["_dt"] != seen[k]["_dt"]:
+            # same title, same day, another time: one more showing (e.g. a film at 3 and 7 pm)
+            kept = seen[k]
+            kept["_times"] = sorted(set(kept.get("_times", [kept["_dt"]]) + [e["_dt"]]))
+            kept["_dt"] = kept["_times"][0]
     # ongoing events that began before today sort as today
     final.sort(key=lambda e: (max(e["_dt"].astimezone(LOCAL_TZ).date(), now.date()), e["_dt"])
                if e["_dt"] else (end.date(), end))
     return final
 
 
-def main():
+def scrape_sources(sources, max_pages, delay):
+    """Fetch every JSON-LD source page; returns (events, report lines)."""
+    events, report = [], []
+    for name, templates in sources.items():
+        got = 0
+        for tpl in templates:
+            for p in (range(1, max_pages + 1) if "{page}" in tpl else [1]):
+                url = tpl.format(page=p)
+                try:
+                    batch = scrape_jsonld(url, name)
+                except Exception as ex:
+                    report.append(f"  ! {name}: {url} -> {ex}")
+                    break
+                events += batch
+                got += len(batch)
+                time.sleep(delay)
+                if not batch:
+                    break
+        report.append(f"  {name}: {got} found")
+    return events, report
+
+
+def build_parser():
     ap = argparse.ArgumentParser(description="Aggregate Winnipeg events.")
     ap.add_argument("--days", type=int, default=30, help="look-ahead window (default 30)")
     ap.add_argument("--pages", type=int, default=2, help="pages per paginated source (default 2)")
@@ -326,57 +545,57 @@ def main():
     ap.add_argument("--url", action="append", default=[], help="extra page with schema.org events")
     ap.add_argument("--out", default="winnipeg_events", help="output file prefix")
     ap.add_argument("--delay", type=float, default=1.5, help="seconds between requests")
-    a = ap.parse_args()
+    return ap
 
-    now = datetime.now(LOCAL_TZ)
-    end = now + timedelta(days=a.days)
+
+def crawl(a, now, end):
+    """Fetch every source; returns (raw events, report lines). Shared with load_to_mongo.py."""
     sources = dict(JSONLD_SOURCES)
     for u in a.url:
         sources[urllib.parse.urlparse(u).netloc] = [u]
 
-    events, report = [], []
-    for name, templates in sources.items():
-        got = 0
-        for tpl in templates:
-            pages = range(1, a.pages + 1) if "{page}" in tpl else [1]
-            for p in pages:
-                url = tpl.format(page=p)
-                try:
-                    batch = scrape_jsonld(url, name)
-                except Exception as ex:
-                    report.append(f"  ! {name}: {url} -> {ex}")
-                    break
-                events += batch
-                got += len(batch)
-                time.sleep(a.delay)
-                if not batch:
-                    break
-        report.append(f"  {name}: {got} found")
+    events, report = scrape_sources(sources, a.pages, a.delay)
 
-    try:
-        tm = ticketmaster(now, end, a.search)
-        events += tm
-        report.append(f"  Ticketmaster: {len(tm)} found" if os.environ.get("TICKETMASTER_API_KEY")
-                      else "  Ticketmaster: skipped (set TICKETMASTER_API_KEY)")
-    except Exception as ex:
-        report.append(f"  ! Ticketmaster -> {ex}")
+    # sources that aren't schema.org pages; a source with an env var needs a free key
+    for label, env, fetch_api in (("Ticketmaster", "TICKETMASTER_API_KEY", lambda: ticketmaster(now, end, a.search)),
+                                  ("CinemaClock showtimes", None, lambda: cinemaclock(a.delay))):
+        if env and not os.environ.get(env):
+            report.append(f"  {label}: skipped (set {env})")
+            continue
+        try:
+            got = fetch_api()
+            events += got
+            report.append(f"  {label}: {len(got)} found")
+        except Exception as ex:
+            report.append(f"  ! {label} -> {ex}")
+    return events, report
 
+
+def main():
+    a = build_parser().parse_args()
+    now = datetime.now(LOCAL_TZ)
+    end = now + timedelta(days=a.days)
+    events, report = crawl(a, now, end)
     final = select_events(events, a, now, end)
 
-    fields = ["date", "until", "time", "category", "tags", "title", "cost", "price", "venue", "address",
-              "source", "url", "description"]
+    fields = ["id", "date", "until", "time", "category", "tags", "title", "cost", "price", "venue", "address",
+              "source", "url", "image", "showtimes", "description"]
     rows = []
     for e in final:
         dt = e["_dt"].astimezone(LOCAL_TZ) if e["_dt"] else None
         until = e["_end"].astimezone(LOCAL_TZ) if "ongoing" in e["tags"] else None
+        times = [t.astimezone(LOCAL_TZ) for t in e.get("_times", [e["_dt"]] if e["_dt"] else [])]
         rows.append({
+            "id": stable_id(e),
             "date": dt.strftime("%a %Y-%m-%d") if dt else "",
             "until": until.strftime("%a %Y-%m-%d") if until else "",
-            "time": dt.strftime("%I:%M %p").lstrip("0") if dt and (dt.hour or dt.minute) else "",
+            "time": ", ".join(t.strftime("%I:%M %p").lstrip("0") for t in times if t.hour or t.minute),
             "category": e["category"],
             "tags": ";".join(e["tags"]),
             "cost": cost_type(e),
             **{f: e[f] for f in ("title", "venue", "address", "price", "source", "url")},
+            "image": e.get("image", ""),
+            "showtimes": e.get("showtimes", ""),
             "description": clean(e.get("description"), limit=300),
         })
     with open(f"{a.out}.csv", "w", newline="", encoding="utf-8") as f:
@@ -389,7 +608,7 @@ def main():
     print("Sources:\n" + "\n".join(report))
     print(f"\n{len(rows)} unique events, {now:%b %d} → {end:%b %d}\n")
     for r in rows:
-        print(f"{r['date']} {r['time']:>8}  {r['cost']:<7}  {r['category'][:22]:<22}  "
+        print(f"{r['date']} {r['time'][:8]:>8}  {r['cost']:<7}  {r['category'][:22]:<22}  "
               f"{r['title'][:50]:<50}  {r['venue'][:24]}")
     counts = collections.Counter(r["category"] for r in rows)
     print("\nBy category: " + ", ".join(f"{c} ({n})" for c, n in counts.most_common()))

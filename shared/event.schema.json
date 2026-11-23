@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://wpg-events.example/schemas/event.json",
+  "title": "Event",
+  "description": "One event as GET /api/events returns it. The crawler's documents (crawler/load_to_mongo.py) map onto this one to one; shared/types.ts is the TypeScript version.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "title", "category", "tags", "start", "end", "startLocal", "endLocal", "allDay", "times",
+               "venue", "price", "cost", "image", "description", "url", "source", "showtimes"],
+  "$defs": {
+    "isoInstant": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$" },
+    "localDateTime": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2})?$" },
+    "hhmm": { "type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$" }
+  },
+  "properties": {
+    "id": { "type": "string", "pattern": "^evt_[0-9a-f]{16}$" },
+    "title": { "type": "string", "minLength": 1 },
+    "category": { "type": "string", "minLength": 1 },
+    "tags": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "start": { "$ref": "#/$defs/isoInstant" },
+    "end": { "oneOf": [{ "$ref": "#/$defs/isoInstant" }, { "type": "null" }] },
+    "startLocal": { "$ref": "#/$defs/localDateTime" },
+    "endLocal": { "oneOf": [{ "$ref": "#/$defs/localDateTime" }, { "type": "null" }] },
+    "allDay": { "type": "boolean" },
+    "times": { "type": "array", "items": { "$ref": "#/$defs/hhmm" } },
+    "venue": {
+      "type": "object", "additionalProperties": false, "required": ["name", "address"],
+      "properties": { "name": { "type": "string" }, "address": { "type": "string" } }
+    },
+    "price": {
+      "type": "object", "additionalProperties": false, "required": ["text", "free"],
+      "properties": { "text": { "type": "string" }, "free": { "type": ["boolean", "null"] } }
+    },
+    "cost": { "enum": ["Free", "Paid", "Unknown"] },
+    "image": { "type": ["string", "null"] },
+    "description": { "type": "string" },
+    "url": { "type": "string" },
+    "source": { "type": "string" },
+    "showtimes": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["cinema", "address", "date", "times"],
+        "properties": {
+          "cinema": { "type": "string" },
+          "address": { "type": "string" },
+          "date": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+          "times": { "type": "array", "items": { "$ref": "#/$defs/hhmm" } }
+        }
+      }
+    }
+  }
+}

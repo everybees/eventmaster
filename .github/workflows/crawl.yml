@@ -1,0 +1,37 @@
+name: Crawl events
+
+on:
+  schedule:
+    - cron: "17 */6 * * *" # every 6 hours (UTC), off the hour when GitHub's scheduler is busiest
+  workflow_dispatch: {} # "Run workflow" button, and the hook for an on-demand refresh later
+
+concurrency:
+  group: crawl
+  cancel-in-progress: false # never two crawls at once
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: crawler/requirements.txt
+
+      - run: pip install -r crawler/requirements.txt
+
+      # Fails the job (and GitHub emails you) when a source that returned events last run
+      # returns none (exit 2), or a run finds under half the usual events (exit 3).
+      - name: Crawl and load into MongoDB
+        run: python crawler/load_to_mongo.py
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_CRAWLER_URI }}
+          MONGODB_DB: ${{ vars.MONGODB_DB || 'wpg_events' }}
+          TICKETMASTER_API_KEY: ${{ secrets.TICKETMASTER_API_KEY }}
+          # use the pip `tzdata` package's rules, not the runner's: Manitoba stopped changing
+          # clocks in Nov 2026 and an older system database would shift times by an hour
+          PYTHONTZPATH: ""

@@ -1,0 +1,3 @@
+# events.py itself needs only the standard library; these are for load_to_mongo.py
+pymongo>=4.7,<5
+tzdata  # time-zone rules for zoneinfo where the system has none

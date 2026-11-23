@@ -1,0 +1,43 @@
+[build]
+  command = "npm run build"
+  publish = "web/dist"
+  functions = "netlify/functions"
+
+[build.environment]
+  NODE_VERSION = "22"
+  # mongodb-memory-server is only for tests; don't download a 140 MB MongoDB binary on every build
+  MONGOMS_DISABLE_POSTINSTALL = "1"
+
+[functions]
+  node_bundler = "esbuild"
+
+# `npm run dev` → netlify dev: the Vite app plus the functions on http://localhost:8888
+[dev]
+  command = "npm run dev:web"
+  targetPort = 5173
+  port = 8888
+  framework = "#custom"
+
+# Netlify Image CDN may fetch, resize and cache images from these hosts only
+# (the sources' image hosts; add one when a new source arrives).
+[images]
+  remote_images = [
+    "https://img\\.evbuc\\.com/.*",
+    "https://cdn\\.evbuc\\.com/.*",
+    "https://cdn-ip\\.allevents\\.in/.*",
+    "https://cdn-az\\.allevents\\.in/.*",
+    "https://www\\.tourismwinnipeg\\.com/.*",
+    "https://www\\.cinemaclock\\.com/.*",
+    "https://winnipegfilmgroup\\.com/.*",
+    "https://s1\\.ticketm\\.net/.*",
+  ]
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
