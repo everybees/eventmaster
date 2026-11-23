@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import type { Action, ApiEvent, SwipeState } from "../../../shared/types.ts";
+import type { Action, ApiEvent, SwipeState, Tickets } from "../../../shared/types.ts";
 import { styleFor } from "../categories.ts";
+import { cityName } from "../city.ts";
 import {
   dateParts, downloadIcs, nextShowtimes, priceNote, priceText, shareEvent, shortSource, tagText, time12, timeLine,
 } from "../format.ts";
@@ -29,11 +30,24 @@ function Row({ icon, title, sub }: { icon: ReactNode; title: string; sub?: strin
   );
 }
 
+/**
+ * The way to buy, if there is one: the seller's own page (Eventbrite, Ticketmaster), or for a paid event
+ * on a listings site, that listing, which links on to the seller.
+ */
+function buyLink(event: ApiEvent, source: string): (Tickets & { label: string }) | null {
+  // saved copies from before tickets existed have no `tickets` field
+  const tickets = event.tickets ?? null;
+  if (tickets) return { ...tickets, label: `Get tickets on ${tickets.seller}` };
+  if (event.cost === "Paid") return { url: event.url, seller: source, affiliate: false, label: `Find tickets on ${source}` };
+  return null;
+}
+
 export function Details({ event, state, onClose, onDecide, onUnsave, onTrack }: Props) {
   const style = styleFor(event.category);
   const tags = tagText(event);
   const shows = nextShowtimes(event);
   const source = shortSource(event.source);
+  const buy = buyLink(event, source);
   // a native modal: Escape closes it, focus stays inside, and the feed behind is inert
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -60,15 +74,39 @@ export function Details({ event, state, onClose, onDecide, onUnsave, onTrack }: 
         </div>
         <div className="rows">
           <Row icon={<IconCalendar size={18} />} title={dateParts(event.startLocal).long} sub={timeLine(event)} />
-          <Row icon={<IconPin size={18} />} title={event.venue.name || "Winnipeg"} sub={event.venue.address} />
+          <Row icon={<IconPin size={18} />} title={event.venue.name || cityName(event.city)} sub={event.venue.address} />
           <Row icon={<IconTicket size={18} />} title={priceText(event)} sub={priceNote(event)} />
+          {buy && (
+            <div className="buy">
+              <a className="link-btn ticket" href={buy.url} target="_blank"
+                rel={buy.affiliate ? "sponsored noopener noreferrer" : "noopener noreferrer"}
+                onClick={() => onTrack("tickets")}>
+                {buy.label} <IconExternal size={16} />
+              </a>
+              {buy.affiliate && <p className="fine">We may earn a commission if you buy through this link.</p>}
+            </div>
+          )}
           {shows.length > 0 && (
             <div className="section">
               <h3>Showtimes</h3>
+              {shows.some((s) => s.tickets?.some(Boolean)) && <p className="fine left">Tap a time to buy tickets.</p>}
               {shows.map((s) => (
                 <div className="show" key={s.cinema}>
                   <strong>{s.cinema}</strong>
-                  <span>{dateParts(s.date).long} · {s.times.map(time12).join(", ")}</span>
+                  <span>{dateParts(s.date).long}</span>
+                  <div className="show-times">
+                    {s.times.map((t, i) => {
+                      const link = s.tickets?.[i]; // saved copies from before ticket links have none
+                      return link ? (
+                        <a key={t} className="time-chip" href={link} target="_blank" rel="noopener noreferrer"
+                          aria-label={`Buy tickets for ${time12(t)} at ${s.cinema}`} onClick={() => onTrack("tickets")}>
+                          {time12(t)}
+                        </a>
+                      ) : (
+                        <span key={t} className="time-chip off">{time12(t)}</span>
+                      );
+                    })}
+                  </div>
                 </div>
               ))}
             </div>
@@ -80,9 +118,11 @@ export function Details({ event, state, onClose, onDecide, onUnsave, onTrack }: 
             </p>
           </div>
           <div className="links">
-            <a className="link-btn wide" href={event.url} target="_blank" rel="noopener noreferrer" onClick={() => onTrack("open_link")}>
-              Open on {source} <IconExternal size={16} />
-            </a>
+            {!buy && (
+              <a className="link-btn wide" href={event.url} target="_blank" rel="noopener noreferrer" onClick={() => onTrack("open_link")}>
+                Open on {source} <IconExternal size={16} />
+              </a>
+            )}
             <button type="button" className="link-btn" onClick={() => { downloadIcs(event); onTrack("calendar"); }}>
               <IconCalendar size={18} /> Add to calendar
             </button>

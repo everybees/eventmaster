@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-load_to_mongo.py — crawl every source (the same crawl as events.py) and upsert the events into MongoDB.
+load_to_mongo.py — crawl one city's sources (the same crawl as events.py) and upsert its events into MongoDB.
 
-Meant to run on a schedule (.github/workflows/crawl.yml). Each event is one document keyed by its
-stable ID, so a re-crawl updates it in place. Events missing from two healthy runs in a row are
-marked "removed". Every run writes a `runs` document with per-source counts. The script exits with
-status 2 when a source that returned events last run returns none, and 3 when the run found under
-half as many events as the last one, so the scheduled job fails and GitHub notifies you.
+Meant to run on a schedule, once per city (.github/workflows/crawl.yml). Each event is one document keyed
+by its stable ID, so a re-crawl updates it in place. A city's events missing from two of its healthy runs
+in a row are marked "removed". Every run writes a `runs` document with per-source counts. The script exits
+with status 2 when a source that returned events last run returns none, and 3 when the run found under
+half as many events as the city's last one, so the scheduled job fails and GitHub notifies you.
 
-  MONGODB_URI=mongodb+srv://… python3 crawler/load_to_mongo.py
+  MONGODB_URI=mongodb+srv://… python3 crawler/load_to_mongo.py --city calgary
   python3 crawler/load_to_mongo.py --dry-run      # crawl and print a sample; no database needed
 
 Needs pymongo (pip install -r crawler/requirements.txt), except for --dry-run.
 """
-import argparse, collections, json, os, sys
+import argparse, collections, json, os, sys, time
 from datetime import datetime, timedelta, timezone
 
 import events as E
@@ -22,6 +22,7 @@ DEFAULT_DB = "wpg_events"
 REMOVE_AFTER_MISSED_RUNS = 2
 HEALTHY_SHARE = 0.5               # a run with under half the last run's events removes nothing
 FEED_GRACE = timedelta(hours=6)   # as in events.wanted(): an event stays listed this long after it ends
+TICKET_RECHECK = timedelta(hours=24)  # how often an AllEvents page is fetched again for its ticket link
 
 
 def to_doc(e):
@@ -42,8 +43,9 @@ def to_doc(e):
         last += timedelta(days=1)  # a bare date lasts all day
     cost = E.cost_type(e)
     free = cost.startswith("Free")
-    return {
+    doc = {
         "_id": E.stable_id(e),
+        "city": E.CITY,
         "title": e["title"],
         "category": e["category"],
         "tags": e["tags"],
@@ -65,6 +67,9 @@ def to_doc(e):
         "visibleUntil": (last + FEED_GRACE).astimezone(timezone.utc),
         "expireAt": (last + timedelta(days=1)).astimezone(timezone.utc),  # TTL index deletes it then
     }
+    if "_ticket_checked" in e:  # only when looked up, so a run that skips the lookup keeps the last answer
+        doc["ticketUrl"], doc["ticketCheckedAt"] = e["_ticket_url"] or None, e["_ticket_checked"]
+    return doc
 
 
 def build_docs(selected):
@@ -77,8 +82,35 @@ def build_docs(selected):
     return list(docs.values())
 
 
-def load(db, docs, source_counts, report, run_start):
-    """Upsert the documents, mark long-missing events removed, and record the run. Returns the run document."""
+def known_ticket_links(db, selected):
+    """What the database already knows about the AllEvents events in this crawl: {id: document}."""
+    ids = [E.stable_id(e) for e in selected if e["source"].startswith("AllEvents") and e["_dt"]]
+    return {d["_id"]: d for d in db.events.find({"_id": {"$in": ids}}, {"ticketUrl": 1, "ticketCheckedAt": 1})}
+
+
+def add_ticket_links(selected, known, now, delay):
+    """AllEvents listings don't say who sells the tickets; each event's own page does. Look that up,
+    at most once a day per event (`known` holds the last answers). Returns the number of pages fetched."""
+    fetched = 0
+    for e in selected:
+        if not e["source"].startswith("AllEvents") or not e["_dt"]:
+            continue
+        k = known.get(E.stable_id(e)) or {}
+        if k.get("ticketCheckedAt") and now - k["ticketCheckedAt"] < TICKET_RECHECK:
+            e["_ticket_url"], e["_ticket_checked"] = k.get("ticketUrl") or "", k["ticketCheckedAt"]
+            continue
+        try:
+            e["_ticket_url"], e["_ticket_checked"] = E.allevents_ticket_url(e["url"]), now
+        except Exception as ex:  # keep the last answer, if any, and try again next run
+            print(f"  ! AllEvents ticket link for {e['url']}: {ex}", file=sys.stderr)
+        fetched += 1
+        time.sleep(delay)
+    return fetched
+
+
+def load(db, docs, source_counts, report, run_start, city=E.DEFAULT_CITY):
+    """Upsert one city's documents, mark its long-missing events removed, and record the run.
+    Returns the run document."""
     from pymongo import UpdateOne
     ops = [UpdateOne({"_id": d["_id"]},
                      {"$set": {**{k: v for k, v in d.items() if k != "_id"},
@@ -88,17 +120,22 @@ def load(db, docs, source_counts, report, run_start):
            for d in docs]
     res = db.events.bulk_write(ops, ordered=False) if ops else None
 
-    prev = db.runs.find_one({"status": {"$ne": "partial"}}, sort=[("startedAt", -1)])
+    # the first city's runs from before cities have no `city`
+    same_city = {"city": city} if city != E.DEFAULT_CITY else {"city": {"$in": [city, None]}}
+    prev = db.runs.find_one({**same_city, "status": {"$ne": "partial"}}, sort=[("startedAt", -1)])
     healthy = prev is None or len(docs) >= HEALTHY_SHARE * prev["total"]
     removed = 0
     if healthy:  # a crawl that mostly failed must not make everything look removed
-        db.events.update_many({"status": "active", "lastSeen": {"$lt": run_start}}, {"$inc": {"missedRuns": 1}})
-        removed = db.events.update_many({"status": "active", "missedRuns": {"$gte": REMOVE_AFTER_MISSED_RUNS}},
+        db.events.update_many({**same_city, "status": "active", "lastSeen": {"$lt": run_start}},
+                              {"$inc": {"missedRuns": 1}})
+        removed = db.events.update_many({**same_city, "status": "active",
+                                         "missedRuns": {"$gte": REMOVE_AFTER_MISSED_RUNS}},
                                         {"$set": {"status": "removed"}}).modified_count
 
     before = {s["source"]: s["count"] for s in (prev or {}).get("sources", [])}
     dropped = sorted(s for s, n in before.items() if n > 0 and source_counts.get(s, 0) == 0)
     run = {
+        "city": city,
         "startedAt": run_start,
         "finishedAt": datetime.now(timezone.utc),
         # a list, not a {source: count} map: source names may contain dots
@@ -116,33 +153,51 @@ def load(db, docs, source_counts, report, run_start):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Crawl Winnipeg events and upsert them into MongoDB.")
+    ap = argparse.ArgumentParser(description="Crawl one city's events and upsert them into MongoDB.")
+    ap.add_argument("--city", choices=sorted(E.CITIES), default=E.DEFAULT_CITY, help=f"default {E.DEFAULT_CITY}")
     ap.add_argument("--days", type=int, default=30, help="look-ahead window (default 30)")
     ap.add_argument("--pages", type=int, default=2, help="pages per paginated source (default 2)")
     ap.add_argument("--delay", type=float, default=1.5, help="seconds between requests")
     ap.add_argument("--dry-run", action="store_true", help="crawl and print a sample; don't touch the database")
+    ap.add_argument("--skip-ticket-links", action="store_true",
+                    help="don't fetch AllEvents event pages for their ticket links (a quicker run)")
     args = ap.parse_args()
 
-    a = E.build_parser().parse_args(["--days", str(args.days), "--pages", str(args.pages), "--delay", str(args.delay)])
+    E.use_city(args.city)
+    a = E.build_parser().parse_args(["--city", args.city, "--days", str(args.days), "--pages", str(args.pages),
+                                     "--delay", str(args.delay)])
+    uri = os.environ.get("MONGODB_URI")
+    if not uri and not args.dry_run:
+        sys.exit("MONGODB_URI is not set (or use --dry-run)")
     run_start = datetime.now(timezone.utc)
     now = datetime.now(E.LOCAL_TZ)
     end = now + timedelta(days=a.days)
+    print(f"Crawling {E.CITY_NAME}")
     raw, report = E.crawl(a, now, end)
     source_counts = collections.Counter(e["source"] for e in raw)
-    docs = build_docs(E.select_events(raw, a, now, end))
-    print("Sources:\n" + "\n".join(report))
-    print(f"\n{len(docs)} events to load")
+    selected = E.select_events(raw, a, now, end)
 
-    if args.dry_run:
-        if docs:
-            print(json.dumps(docs[0], default=str, indent=2, ensure_ascii=False))
-        return 0
-    uri = os.environ.get("MONGODB_URI")
-    if not uri:
-        sys.exit("MONGODB_URI is not set (or use --dry-run)")
-    from pymongo import MongoClient
-    with MongoClient(uri, tz_aware=True, appname="wpg-events-crawler") as client:
-        run = load(client[os.environ.get("MONGODB_DB") or DEFAULT_DB], docs, source_counts, report, run_start)
+    client = None
+    if not args.dry_run:
+        from pymongo import MongoClient
+        client = MongoClient(uri, tz_aware=True, appname="wpg-events-crawler")
+    try:
+        db = client[os.environ.get("MONGODB_DB") or DEFAULT_DB] if client else None
+        if not args.skip_ticket_links:
+            known = known_ticket_links(db, selected) if db is not None else {}
+            fetched = add_ticket_links(selected, known, run_start, a.delay)
+            report.append(f"  AllEvents ticket links: {fetched} event pages checked")
+        docs = build_docs(selected)
+        print("Sources:\n" + "\n".join(report))
+        print(f"\n{len(docs)} events to load")
+        if db is None:
+            if docs:
+                print(json.dumps(docs[0], default=str, indent=2, ensure_ascii=False))
+            return 0
+        run = load(db, docs, source_counts, report, run_start, E.CITY)
+    finally:
+        if client:
+            client.close()
     print(f"Loaded: {run['upserted']} new, {run['modified']} updated, {run['removed']} marked removed "
           f"(status: {run['status']})")
     if run["status"] == "partial":

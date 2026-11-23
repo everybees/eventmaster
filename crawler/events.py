@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-events.py — pull upcoming Winnipeg events from several sources into one list.
+events.py — pull one city's upcoming events from several sources into one list.
 
-Sources:
+Cities and their sources are in shared/cities.json (Winnipeg is the default). For each city:
   - Eventbrite (public discovery pages, schema.org JSON-LD)
   - AllEvents.in (aggregates many public Facebook events)
-  - Tourism Winnipeg
-  - True North / Canada Life Centre & Burton Cummings Theatre
-  - Movies & film: Eventbrite/AllEvents film pages and the Cinematheque (screenings), and
-    CinemaClock for showtimes at Winnipeg cinemas (Cineplex, Landmark, Cinema City, Garden City)
+  - Movies & film: Eventbrite/AllEvents film pages, and CinemaClock for showtimes at the city's cinemas
   - Ticketmaster Discovery API (optional, free key: TICKETMASTER_API_KEY)
+  - the city's own extra sources, e.g. Tourism Winnipeg and the Cinematheque
   - Any extra page you pass with --url (works on most sites using schema.org Event markup)
 
 Standard library only — no pip installs needed.
 
 Usage:
-  python3 crawler/events.py                      # next 30 days
+  python3 crawler/events.py                      # Winnipeg, next 30 days
+  python3 crawler/events.py --city calgary
   python3 crawler/events.py --days 7 --pages 3
   python3 crawler/events.py --search "afrobeats"
   python3 crawler/events.py --category music --category arts   # matches category names or tags
@@ -27,34 +26,28 @@ Usage:
 import argparse, collections, csv, hashlib, html, json, os, re, sys, time
 import urllib.request, urllib.parse
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
-try:
-    from zoneinfo import ZoneInfo
-    LOCAL_TZ = ZoneInfo("America/Winnipeg")
-except Exception:  # no tz database available
-    LOCAL_TZ = timezone(timedelta(hours=-5))  # Manitoba has stayed on UTC-5 since Nov 2026 (tzdata 2026f)
 
-# name -> list of URL templates; {page} is replaced for paginated sources
-JSONLD_SOURCES = {
-    "Eventbrite": ["https://www.eventbrite.ca/d/canada--winnipeg/all-events/?page={page}"],
-    "AllEvents (incl. Facebook events)": ["https://allevents.in/winnipeg/all?page={page}"],
-    "Tourism Winnipeg": ["https://www.tourismwinnipeg.com/events"],
-    "True North (Canada Life Centre etc.)": ["https://www.tnse.com/events/"],
-    # film screenings; the general pages above miss most of them
-    "Eventbrite (film)": ["https://www.eventbrite.ca/d/canada--winnipeg/film-and-media--events/?page={page}"],
-    "AllEvents (movies & film)": ["https://allevents.in/winnipeg/movies?page={page}",
-                                  "https://allevents.in/winnipeg/film?page={page}"],
-    "Cinematheque (Winnipeg Film Group)": ["https://winnipegfilmgroup.com/cinematheque/"],
-}
-# used when a source's markup leaves the venue out
-SOURCE_VENUES = {"Cinematheque (Winnipeg Film Group)": ("Dave Barber Cinematheque", "100 Arthur St")}
+# Every city's settings; use_city() (at the bottom of the file) points the crawler at one of them.
+CITIES = json.loads((Path(__file__).resolve().parent.parent / "shared" / "cities.json").read_text(encoding="utf-8"))
+DEFAULT_CITY = next(iter(CITIES))  # the first city (Winnipeg): its event IDs predate cities (see stable_id)
+# Set by use_city(): the city's slug and name, its time zone, its JSON-LD sources (name -> URL
+# templates; {page} is replaced for paginated sources), venues for sources whose markup leaves them
+# out, its CinemaClock theatres, its Ticketmaster search, and its venue categorization rules.
+CITY = CITY_NAME = ""
+LOCAL_TZ = timezone.utc
+JSONLD_SOURCES, SOURCE_VENUES, CINEMACLOCK_THEATRES, TICKETMASTER_PLACE, CITY_VENUE_RULES = {}, {}, [], {}, []
 # "Otium - 11/22/26 @ 3:00 pm": the Cinematheque puts each showtime in the title
 SHOWTIME_SUFFIX_RE = re.compile(r" - \d{1,2}/\d{1,2}/\d{2,4} ?@ ?\d{1,2}:\d{2} ?[ap]m$", re.I)  # on clean()ed titles
 
 
 def fetch(url, timeout=25):
+    # listings link to addresses like /matambú-la-cumbia; escape anything that isn't ASCII
+    url = urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "en-CA,en"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read().decode(r.headers.get_content_charset() or "utf-8", "replace")
@@ -158,7 +151,7 @@ def ticketmaster(start, end, keyword=None):
     if not key:
         return []
     params = {
-        "apikey": key, "city": "Winnipeg", "countryCode": "CA", "size": 200, "sort": "date,asc",
+        "apikey": key, **TICKETMASTER_PLACE, "size": 200, "sort": "date,asc",
         "startDateTime": start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "endDateTime": end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
@@ -190,15 +183,11 @@ def ticketmaster(start, end, keyword=None):
     return out
 
 
-# ---------- CinemaClock: showtimes at Winnipeg cinemas ----------
+# ---------- CinemaClock: showtimes at the city's cinemas ----------
 # Cineplex's own site is off limits: its robots.txt disallows every crawler but search engines,
 # and its showtimes come from a private API. CinemaClock lists the same showtimes (plus Landmark
 # and the independents) and allows crawling.
 CINEMACLOCK = "https://www.cinemaclock.com"
-CINEMACLOCK_THEATRES = [  # Winnipeg proper; the Cinematheque has its own source above
-    "scotiabank-theatre-winnipeg", "cineplex-odeon-mcgillivray-vip", "cineplex-junxion-kildonan-place",
-    "silvercity-st-vital", "landmark-grant-park", "cinema-city-northgate", "garden-city-cinemas",
-]
 CC_BLOCK_RE = re.compile(r'<div id="moviecin[^"]*" class="showtimeblock')
 CC_TITLE_RE = re.compile(r"<h3 class='movietitle[^']*'[^>]*><a[^>]*href='(/movies/[^']+)'>(.*?)</a>")
 CC_POSTER_RE = re.compile(r"data-src='/images/posters/140x210(/[^']+)'")
@@ -209,6 +198,8 @@ CC_GROUP_RE = re.compile(r'<div data-earliest-date="(\d{8})"')
 CC_FORMAT_RE = re.compile(r'<p class="timesalso">([^<]*)<')
 CC_DAY_RE = re.compile(r'<span class="timesdate">([A-Z][a-z]{2}) (\d{1,2})</span></u><i>(.*?)</i>', re.S)
 CC_TIME_RE = re.compile(r'data-time="(\d{1,2})(\d{2})"')
+CC_SHOWING_RE = re.compile(r'<span\b([^>]*\bdata-time="\d{3,4}"[^>]*)>')
+CC_TIX_RE = re.compile(r'\bid="(tix\d+)"')  # bookable showing: /buy-tickets/<id> redirects to the cinema's checkout
 CC_SYNOPSIS_RE = re.compile(r'<p id="synopsis"[^>]*>(.*?)</p>', re.S)
 MONTHS = {m: i for i, m in enumerate(
     ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
@@ -218,7 +209,7 @@ def hm(h, m):
     return datetime(2000, 1, 1, h % 24, m).strftime("%I:%M %p").lstrip("0")
 
 def cc_showings(block):
-    """{date: {(hour, minute), ...}} and the screen formats, from one movie's block."""
+    """{date: {(hour, minute): ticket link or ""}} and the screen formats, from one movie's block."""
     shows, formats = {}, set()
     parts = CC_GROUP_RE.split(block)  # [before, yyyymmdd, group, yyyymmdd, group, ...]
     for earliest, grp in zip(parts[1::2], parts[2::2]):
@@ -231,7 +222,11 @@ def cc_showings(block):
         for mon, day, inner in CC_DAY_RE.findall(grp):
             month = MONTHS[mon]
             date = datetime(year + (month < first_month), month, int(day)).date()  # Dec → Jan rolls the year
-            shows.setdefault(date, set()).update((int(h), int(m)) for h, m in CC_TIME_RE.findall(inner))
+            day = shows.setdefault(date, {})
+            for attrs in CC_SHOWING_RE.findall(inner):
+                h, m = CC_TIME_RE.search(attrs).groups()
+                tix = CC_TIX_RE.search(attrs)
+                day[(int(h), int(m))] = day.get((int(h), int(m))) or (f"{CINEMACLOCK}/buy-tickets/{tix.group(1)}" if tix else "")
     return shows, formats
 
 def cc_theatre(slug):
@@ -325,9 +320,31 @@ def cc_film_row(path, f, synopsis):
         "showtimes": " | ".join(nxt),  # each cinema's next day with showings
         # the whole week, structured, for the database
         "_showtimes": [{"cinema": c, "address": f["cinemas"][c][0], "date": d.isoformat(),
-                        "times": [f"{h % 24:02d}:{m:02d}" for h, m in sorted(f["cinemas"][c][1][d])]}
+                        "times": [f"{h % 24:02d}:{m:02d}" for h, m in sorted(f["cinemas"][c][1][d])],
+                        "tickets": [link for _, link in sorted(f["cinemas"][c][1][d].items())]}
                        for c in cinemas for d in sorted(f["cinemas"][c][1])],
     }
+
+
+# ---------- AllEvents: the real seller behind a listing ----------
+AE_TICKET_RE = re.compile(r"\['external_ticket_url'\]\s*=\s*\"((?:[^\"\\]|\\.)*)\"")
+TRACKING_PARAMS_RE = re.compile(r"^(aff|ref|utm_\w+)$", re.I)
+
+def unwrap_tracking(url):
+    """An affiliate deep link (https://tracker/c/1/2/3?u=<seller URL>) -> the seller's own URL,
+    without referral parameters, so the click isn't credited to whoever wrapped it."""
+    q = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)
+    inner = next((v[0] for k in ("u", "url") for v in [q.get(k)] if v and v[0].startswith(("https://", "http://"))), url)
+    parts = urllib.parse.urlsplit(inner)
+    query = [(k, v) for k, v in urllib.parse.parse_qsl(parts.query) if not TRACKING_PARAMS_RE.match(k)]
+    return urllib.parse.urlunsplit(parts._replace(query=urllib.parse.urlencode(query)))
+
+def allevents_ticket_url(page_url):
+    """Where an AllEvents listing sends people for tickets (Ticketmaster, Eventbrite, the organizer…),
+    or "" when it doesn't. It's only in the event's own page, not in the listing pages."""
+    m = AE_TICKET_RE.search(fetch(page_url))
+    url = json.loads(f'"{m.group(1)}"') if m else ""  # a JavaScript string: "https:\/\/…"
+    return unwrap_tracking(url) if url.startswith(("https://", "http://")) else ""
 
 
 # ---------- helpers ----------
@@ -372,12 +389,15 @@ def dedupe_key(e):
 def stable_id(e):
     """The same event gets the same ID on every run, whichever source happened to list it first,
     so saved events and interaction history survive re-crawls. Films are keyed by their CinemaClock
-    page, exhibitions and other ongoing runs by title, everything else by title + date."""
+    page, exhibitions and other ongoing runs by title, everything else by title + date, and all of
+    them by city (the same film plays in every city), except in the first city, whose IDs came first."""
     if e.get("source", "").startswith("CinemaClock"):
         key = e["url"]
     else:
         title, date = dedupe_key(e)
         key = f"{title}|{'ongoing' if 'ongoing' in e.get('tags', ()) else date}"
+    if CITY != DEFAULT_CITY:
+        key = f"{CITY}|{key}"
     return "evt_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
 
 
@@ -421,14 +441,14 @@ CATEGORY_RULES = [
     ("Food & Drink", _rx(r"cocktail|brunch|\blunch(eon)?\b|dinner|tasting|\bwine\b|\bbeer\b|whiske?y|distillery|cooking|"
                          r"culinary|\bchef\b")),
 ]
-# Fallback when the title says nothing; only venues that mostly host one kind of event.
+# Fallback when the title says nothing; only venues that mostly host one kind of event. Each city
+# adds its own named venues (venueRules in shared/cities.json), which are tried first.
 VENUE_RULES = [
     ("Movies & Film", _rx(r"cinema|cinematheque|imax|cineplex")),
-    ("Music & Concerts", _rx(r"park theatre|times change|burton cummings|concert hall|"
-                             r"west end cultural|club regent")),
-    ("Nightlife & Parties", _rx(r"pyramid cabaret|nightlife")),
-    ("Arts & Theatre", _rx(r"theat(re|er)|arts cent|playhouse|rainbow stage")),
-    ("Exhibitions & Attractions", _rx(r"art gallery|museum|qaumajuq|\bthe leaf\b|fortwhyte|assiniboine park")),
+    ("Music & Concerts", _rx(r"concert hall")),
+    ("Nightlife & Parties", _rx(r"nightlife")),
+    ("Arts & Theatre", _rx(r"theat(re|er)|arts cent|playhouse")),
+    ("Exhibitions & Attractions", _rx(r"art gallery|museum")),
 ]
 TM_SEGMENTS = {"Music": "Music & Concerts", "Sports": "Sports & Outdoors", "Arts & Theatre": "Arts & Theatre",
                "Film": "Movies & Film", "Family": "Family & Kids"}
@@ -446,7 +466,7 @@ def categorize(e):
     title, desc = e["title"], e.get("description", "")
     cat = (e.get("category_hint")
            or next((c for c, rx in CATEGORY_RULES if rx.search(title)), None)
-           or next((c for c, rx in VENUE_RULES if rx.search(e["venue"])), None))
+           or next((c for c, rx in CITY_VENUE_RULES + VENUE_RULES if rx.search(e["venue"])), None))
     if not cat and desc:
         # descriptions are noisy, so score every category instead of taking the first hit
         hits, _, best = max((len(rx.findall(desc)), -i, c) for i, (c, rx) in enumerate(CATEGORY_RULES))
@@ -533,7 +553,8 @@ def scrape_sources(sources, max_pages, delay):
 
 
 def build_parser():
-    ap = argparse.ArgumentParser(description="Aggregate Winnipeg events.")
+    ap = argparse.ArgumentParser(description="Aggregate a city's events.")
+    ap.add_argument("--city", choices=sorted(CITIES), default=DEFAULT_CITY, help=f"default {DEFAULT_CITY}")
     ap.add_argument("--days", type=int, default=30, help="look-ahead window (default 30)")
     ap.add_argument("--pages", type=int, default=2, help="pages per paginated source (default 2)")
     ap.add_argument("--search", help="only keep events whose title/venue contains this text")
@@ -543,7 +564,7 @@ def build_parser():
                          "Categories: " + ", ".join(CATEGORIES) + ", Other. "
                          "Tags: holiday, family, ongoing")
     ap.add_argument("--url", action="append", default=[], help="extra page with schema.org events")
-    ap.add_argument("--out", default="winnipeg_events", help="output file prefix")
+    ap.add_argument("--out", help="output file prefix (default: <city>_events)")
     ap.add_argument("--delay", type=float, default=1.5, help="seconds between requests")
     return ap
 
@@ -571,8 +592,38 @@ def crawl(a, now, end):
     return events, report
 
 
+def use_city(slug):
+    """Point every city setting above at one city in shared/cities.json. A process crawls one city."""
+    global CITY, CITY_NAME, LOCAL_TZ, JSONLD_SOURCES, SOURCE_VENUES, CINEMACLOCK_THEATRES, TICKETMASTER_PLACE
+    global CITY_VENUE_RULES
+    c = CITIES[slug]
+    k = c["crawl"]
+    eb, ae = k["eventbrite"], k["allevents"]
+    CITY, CITY_NAME, LOCAL_TZ = slug, c["name"], ZoneInfo(c["timezone"])
+    JSONLD_SOURCES = {
+        "Eventbrite": [f"https://www.eventbrite.ca/d/{eb}/all-events/?page={{page}}"],
+        "AllEvents (incl. Facebook events)": [f"https://allevents.in/{ae}/all?page={{page}}"],
+        # film screenings; the general pages above miss most of them
+        "Eventbrite (film)": [f"https://www.eventbrite.ca/d/{eb}/film-and-media--events/?page={{page}}"],
+        "AllEvents (movies & film)": [f"https://allevents.in/{ae}/movies?page={{page}}",
+                                      f"https://allevents.in/{ae}/film?page={{page}}"],
+        **k.get("sources", {}),
+    }
+    SOURCE_VENUES = {name: tuple(v) for name, v in k.get("sourceVenues", {}).items()}
+    CINEMACLOCK_THEATRES = list(k.get("cinemaclock", []))
+    TICKETMASTER_PLACE = dict(k["ticketmaster"])
+    CITY_VENUE_RULES = [(cat, _rx(p)) for cat, p in k.get("venueRules", {}).items()]
+    unknown = {cat for cat, _ in CITY_VENUE_RULES} - set(CATEGORIES)
+    assert not unknown, f"{slug}: venueRules use unknown categories {unknown}"
+
+
+use_city(DEFAULT_CITY)
+
+
 def main():
     a = build_parser().parse_args()
+    use_city(a.city)
+    a.out = a.out or f"{a.city}_events"
     now = datetime.now(LOCAL_TZ)
     end = now + timedelta(days=a.days)
     events, report = crawl(a, now, end)

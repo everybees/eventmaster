@@ -79,6 +79,56 @@ class ToDoc(unittest.TestCase):
         self.assertNotEqual(E.stable_id(a), E.stable_id(c))
         self.assertRegex(E.stable_id(a), r"^evt_[0-9a-f]{16}$")
 
+    def test_each_city_has_its_own_ids_and_the_first_keeps_its_old_ones(self):
+        (film,) = select(raw("Wicked", "2026-11-23", source="CinemaClock (cinema showtimes)",
+                             url="https://www.cinemaclock.com/movies/wicked"))
+        import hashlib
+        old = "evt_" + hashlib.sha1(film["url"].encode()).hexdigest()[:16]  # the ID from before cities
+        self.assertEqual(E.stable_id(film), old)
+        E.use_city("calgary")
+        try:
+            self.assertNotEqual(E.stable_id(film), old)
+            self.assertEqual(L.to_doc(film)["city"], "calgary")
+        finally:
+            E.use_city(E.DEFAULT_CITY)
+
+
+class Tickets(unittest.TestCase):
+    def test_cinemaclock_showings_keep_their_ticket_links(self):
+        block = ('<div data-earliest-date="20261123" class="x"><p class="times"><u>Today <span class="timesdate">Nov 23'
+                 '</span></u><i><span class="tix tod" data-time="1210" id="tix231">12:10 </span> '
+                 '<span class="notix" data-time="1520">3:20 </span></i></p>')
+        shows, _ = E.cc_showings(block)
+        self.assertEqual(shows, {datetime(2026, 11, 23).date(): {
+            (12, 10): "https://www.cinemaclock.com/buy-tickets/tix231", (15, 20): ""}})
+
+    def test_allevents_ticket_link_is_the_sellers_own(self):
+        page = ("clevertap_obj['external_ticket_url'] = \"https:\\/\\/ticketmaster.evyy.net\\/c\\/1\\/2\\/3?u="
+                "https:\\/\\/www.ticketmaster.ca\\/show\\/event\\/10AB\"; ")
+        url = E.AE_TICKET_RE.search(page).group(1)
+        self.assertEqual(E.unwrap_tracking(url.replace("\\/", "/")), "https://www.ticketmaster.ca/show/event/10AB")
+        self.assertEqual(E.unwrap_tracking("https://t.example/c/1?u=https%3A%2F%2Fwww.eventbrite.com%2Fe%2Fx-1%3Faff%3Dae%26lang%3Den"),
+                         "https://www.eventbrite.com/e/x-1?lang=en")
+        self.assertEqual(E.unwrap_tracking("https://organizer.example/tickets"), "https://organizer.example/tickets")
+
+    def test_ticket_links_are_looked_up_at_most_daily(self):
+        events = select(raw("Show A", "2026-11-25T20:00:00-05:00", source="AllEvents"),
+                        raw("Show B", "2026-11-26T20:00:00-05:00", source="AllEvents"),
+                        raw("Show C", "2026-11-26T20:00:00-05:00", source="Eventbrite"))
+        a, b, c = sorted(events, key=lambda e: e["title"])
+        now = datetime(2026, 11, 23, 12, tzinfo=timezone.utc)
+        known = {E.stable_id(a): {"ticketUrl": "https://www.ticketmaster.ca/a", "ticketCheckedAt": now - timedelta(hours=3)}}
+        fetched = []
+        real, E.allevents_ticket_url = E.allevents_ticket_url, lambda url: fetched.append(url) or "https://seller.example/b"
+        try:
+            self.assertEqual(L.add_ticket_links(events, known, now, delay=0), 1)
+        finally:
+            E.allevents_ticket_url = real
+        self.assertEqual(fetched, [b["url"]])
+        self.assertEqual(L.to_doc(a)["ticketUrl"], "https://www.ticketmaster.ca/a")
+        self.assertEqual(L.to_doc(b)["ticketUrl"], "https://seller.example/b")
+        self.assertNotIn("ticketUrl", L.to_doc(c))
+
 
 @unittest.skipUnless(os.environ.get("MONGODB_TEST_URI"), "set MONGODB_TEST_URI to run against MongoDB")
 class Load(unittest.TestCase):
@@ -93,10 +143,14 @@ class Load(unittest.TestCase):
         cls.client.drop_database(cls.db.name)
         cls.client.close()
 
-    def run_with(self, *titles, sources=None, at=None):
-        docs = L.build_docs(select(*[raw(t, "2026-11-25T20:00:00-05:00") for t in titles]))
+    def run_with(self, *titles, sources=None, at=None, city=E.DEFAULT_CITY):
+        E.use_city(city)
+        try:
+            docs = L.build_docs(select(*[raw(t, "2026-11-25T20:00:00-05:00") for t in titles]))
+        finally:
+            E.use_city(E.DEFAULT_CITY)
         counts = sources if sources is not None else {"Test": len(docs)}
-        return L.load(self.db, docs, counts, [], at)
+        return L.load(self.db, docs, counts, [], at, city)
 
     def test_upserts_removals_and_alerts(self):
         t0 = datetime(2026, 11, 23, 12, tzinfo=timezone.utc)
@@ -122,6 +176,14 @@ class Load(unittest.TestCase):
         run = self.run_with("A", "B", "C", "D", at=t0 + timedelta(hours=30))  # D is back
         self.assertEqual(self.db.events.find_one({"title": "D"})["status"], "active")
         self.assertIsNotNone(self.db.events.find_one({"title": "A"})["firstSeen"])
+
+        # another city's runs don't count against this city's events, or into its "half the usual" check
+        for hours in (36, 42):
+            run = self.run_with("Calgary 1", at=t0 + timedelta(hours=hours), city="calgary")
+            self.assertEqual((run["status"], run["removed"]), ("ok", 0))
+        a = self.db.events.find_one({"title": "A"})
+        self.assertEqual((a["city"], a["status"], a["missedRuns"]), ("winnipeg", "active", 0))
+        self.assertEqual(self.db.events.find_one({"title": "Calgary 1"})["city"], "calgary")
 
 
 if __name__ == "__main__":

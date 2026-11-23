@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { Action, ApiEvent, SwipeState, Via } from "../../shared/types.ts";
-import { deleteMyData, fetchEvents } from "./api.ts";
+import type { Action, ApiEvent, City, SwipeState, Via } from "../../shared/types.ts";
+import { deleteMyData, fetchCities, fetchEvents } from "./api.ts";
 import { CATEGORY_ORDER, styleFor } from "./categories.ts";
+import { cachedCities, cityName, rememberCities, saveCity, savedCity } from "./city.ts";
 import { CardStack, type Decision, type StackHandle } from "./components/CardStack.tsx";
+import { CityPicker } from "./components/CityPicker.tsx";
 import { Details } from "./components/Details.tsx";
-import { IconBookmark, IconClock, IconCompass, IconInfo, IconRefresh, IconUndo, IconX } from "./components/icons.tsx";
+import {
+  IconBookmark, IconChevronDown, IconClock, IconCompass, IconInfo, IconRefresh, IconUndo, IconX,
+} from "./components/icons.tsx";
 import { Saved } from "./components/Saved.tsx";
 import { resetDeviceId } from "./device.ts";
 import { ALL, countByCategory, inCategory, remaining } from "./feed.ts";
@@ -17,6 +21,9 @@ const HINT = "Drag the card: ← pass · save → · ↑ details · ↓ later";
 const KEYS: Record<string, Decision | undefined> = { ArrowLeft: "pass", ArrowRight: "save", ArrowDown: "later" };
 
 export function App() {
+  const [city, setCity] = useState<string | null>(savedCity);
+  const [cities, setCities] = useState<City[] | null>(cachedCities);
+  const [picking, setPicking] = useState(() => savedCity() === null); // first visit: ask where they are
   const [events, setEvents] = useState<ApiEvent[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [store, dispatch] = useSwipeStore();
@@ -29,17 +36,46 @@ export function App() {
   const toastTimer = useRef(0);
   const lastViewed = useRef("");
 
-  const load = useCallback(() => {
-    setLoadError(null);
-    fetchEvents().then(setEvents, (err: Error) => setLoadError(err.message));
+  const loadCities = useCallback(() => {
+    fetchCities().then(({ cities, defaultCity }) => {
+      rememberCities(cities, defaultCity);
+      setCities(cities);
+    }, () => {}); // the picker offers "Try again" when there's no list at all
   }, []);
-  useEffect(load, [load]);
+  useEffect(loadCities, [loadCities]);
+
+  // the feed for the chosen city; a reply for a city that's no longer chosen is dropped
+  const [reloads, setReloads] = useState(0);
+  const load = useCallback(() => setReloads((n) => n + 1), []);
+  useEffect(() => {
+    if (!city) return;
+    let current = true;
+    setLoadError(null);
+    fetchEvents(city).then(
+      (list) => current && setEvents(list),
+      (err: Error) => current && setLoadError(err.message),
+    );
+    return () => { current = false; };
+  }, [city, reloads]);
+
+  function pickCity(slug: string) {
+    setPicking(false);
+    if (slug === city) return;
+    saveCity(slug);
+    setCity(slug);
+    setEvents(null);
+    setCategory(ALL);
+  }
 
   const queue = useMemo(() => remaining(events ?? [], store), [events, store]);
   const counts = useMemo(() => countByCategory(queue), [queue]);
   const visible = useMemo(() => inCategory(queue, category), [queue, category]);
   const top = visible[0];
-  const savedEvents = useMemo(() => Object.values(store.saved), [store.saved]);
+  // the saved copy, refreshed from the feed while the event is in it (new times, prices, ticket links)
+  const savedEvents = useMemo(() => {
+    const fresh = new Map((events ?? []).map((e) => [e.id, e]));
+    return Object.values(store.saved).map((e) => fresh.get(e.id) ?? e);
+  }, [events, store.saved]);
 
   // one "view" each time a new card reaches the top of the stack
   useEffect(() => {
@@ -97,7 +133,7 @@ export function App() {
   // arrow keys on a keyboard do what the swipes do
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (tab !== "discover" || open || e.target instanceof HTMLInputElement) return;
+      if (tab !== "discover" || open || picking || e.target instanceof HTMLInputElement) return;
       const decision = KEYS[e.key];
       if (decision) stack.current?.fling(decision);
       else if (e.key === "ArrowUp" && top) openDetails(top, "button");
@@ -111,7 +147,14 @@ export function App() {
   const chips = [ALL, ...CATEGORY_ORDER.filter((c) => counts.get(c) || c === category)];
   const noCards = !top;
   let body: ReactNode;
-  if (loadError) {
+  if (!city) {
+    body = (
+      <div className="message">
+        <p>Pick a city to see what’s on.</p>
+        <button type="button" className="bar-btn" onClick={() => setPicking(true)}>Choose a city</button>
+      </div>
+    );
+  } else if (loadError) {
     body = (
       <div className="message">
         <p>{loadError}</p>
@@ -141,10 +184,14 @@ export function App() {
         <div className="screen">
           <header className="header">
             <div>
-              <h1>Winnipeg, this month</h1>
-              <p className="subtitle">{events ? `${queue.length} events to go` : "Loading…"}</p>
+              <h1>
+                <button type="button" className="city-btn" aria-haspopup="dialog" onClick={() => setPicking(true)}>
+                  {city ? cityName(city) : "Pick a city"} <IconChevronDown size={22} weight={2.5} />
+                </button>
+              </h1>
+              <p className="subtitle">{!city ? "" : events ? `This month · ${queue.length} events to go` : "Loading…"}</p>
             </div>
-            <button type="button" className="icon-btn" aria-label="Reload events" onClick={load}><IconRefresh /></button>
+            <button type="button" className="icon-btn" aria-label="Reload events" onClick={load} disabled={!city}><IconRefresh /></button>
           </header>
           <nav className="chips" aria-label="Categories">
             {chips.map((c) => (
@@ -186,6 +233,17 @@ export function App() {
           <IconBookmark size={22} /><span>Saved · {savedEvents.length}</span>
         </button>
       </nav>
+
+      {picking && (
+        <CityPicker
+          cities={cities}
+          current={city}
+          firstRun={!city}
+          onPick={pickCity}
+          onClose={() => setPicking(false)}
+          onRetry={loadCities}
+        />
+      )}
 
       {open && (
         <Details

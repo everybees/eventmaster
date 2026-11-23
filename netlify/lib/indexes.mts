@@ -5,9 +5,10 @@ const DAY = 24 * 3600;
 /** Creates every index the app relies on. Safe to run again; existing indexes are left alone. */
 export async function setupIndexes(db: Db): Promise<void> {
   await db.collection("events").createIndexes([
-    { key: { status: 1, visibleUntil: 1, start: 1 }, name: "feed" },
-    { key: { status: 1, category: 1, start: 1 }, name: "by_category" },
-    { key: { status: 1, tags: 1, start: 1 }, name: "by_tag" },
+    // every feed query is for one city (from before cities: "feed", "by_category", "by_tag"; safe to drop)
+    { key: { city: 1, status: 1, visibleUntil: 1, start: 1 }, name: "city_feed" },
+    { key: { city: 1, status: 1, category: 1, start: 1 }, name: "city_category" },
+    { key: { city: 1, status: 1, tags: 1, start: 1 }, name: "city_tag" },
     { key: { expireAt: 1 }, name: "expire", expireAfterSeconds: 0 }, // past events delete themselves
   ]);
   await db.collection("interactions").createIndexes([

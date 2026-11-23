@@ -1,0 +1,58 @@
+{
+  "winnipeg": {
+    "name": "Winnipeg",
+    "region": "MB",
+    "country": "CA",
+    "timezone": "America/Winnipeg",
+    "lat": 49.8954,
+    "lon": -97.1385,
+    "crawl": {
+      "eventbrite": "canada--winnipeg",
+      "allevents": "winnipeg",
+      "ticketmaster": { "city": "Winnipeg", "countryCode": "CA" },
+      "cinemaclock": [
+        "scotiabank-theatre-winnipeg", "cineplex-odeon-mcgillivray-vip", "cineplex-junxion-kildonan-place",
+        "silvercity-st-vital", "landmark-grant-park", "cinema-city-northgate", "garden-city-cinemas"
+      ],
+      "sources": {
+        "Tourism Winnipeg": ["https://www.tourismwinnipeg.com/events"],
+        "Cinematheque (Winnipeg Film Group)": ["https://winnipegfilmgroup.com/cinematheque/"]
+      },
+      "sourceVenues": {
+        "Cinematheque (Winnipeg Film Group)": ["Dave Barber Cinematheque", "100 Arthur St"]
+      },
+      "venueRules": {
+        "Music & Concerts": "park theatre|times change|burton cummings|west end cultural|club regent",
+        "Nightlife & Parties": "pyramid cabaret",
+        "Exhibitions & Attractions": "qaumajuq|\\bthe leaf\\b|fortwhyte|assiniboine park",
+        "Arts & Theatre": "rainbow stage"
+      }
+    }
+  },
+  "calgary": {
+    "name": "Calgary",
+    "region": "AB",
+    "country": "CA",
+    "timezone": "America/Edmonton",
+    "lat": 51.0447,
+    "lon": -114.0719,
+    "crawl": {
+      "eventbrite": "canada--calgary",
+      "allevents": "calgary",
+      "ticketmaster": { "city": "Calgary", "countryCode": "CA" },
+      "cinemaclock": [
+        "plaza-theatre", "globe-cinema", "cineplex-vip-university-district-18-only", "scotiabank-theatre-chinook",
+        "landmark-5-calgary-market-mall", "cineplex-odeon-westhills", "cineplex-odeon-sunridge-spectrum",
+        "landmark-16-country-hills", "cineplex-odeon-crowfoot-crossing", "cineplex-east-hills",
+        "canyon-meadows-cinemas", "landmark-10-shawnessy", "cineplex-seton-vip"
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {
+        "Music & Concerts": "jack singer|bella concert hall|jubilee auditorium|palace theatre|commonwealth bar",
+        "Arts & Theatre": "arts commons|vertigo theatre|loose moose|lunchbox theatre",
+        "Exhibitions & Attractions": "glenbow|telus spark|calgary zoo|wilder institute|heritage park|studio bell"
+      }
+    }
+  }
+}

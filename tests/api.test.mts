@@ -8,12 +8,14 @@ import type { Context } from "@netlify/functions";
 import Ajv2020 from "ajv/dist/2020.js";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import type { Db } from "mongodb";
-import type { EventsResponse, StateResponse } from "../shared/types.ts";
+import type { ApiEvent, CitiesResponse, EventsResponse, StateResponse } from "../shared/types.ts";
 import { closeDb, getDb } from "../netlify/lib/db.mts";
 import { setupIndexes } from "../netlify/lib/indexes.mts";
 import type { EventDoc } from "../netlify/lib/models.mts";
+import { ticketsFor } from "../netlify/lib/tickets.mts";
 import eventsFn from "../netlify/functions/events.mts";
 import eventFn from "../netlify/functions/event.mts";
+import citiesFn from "../netlify/functions/cities.mts";
 import interactionsFn from "../netlify/functions/interactions.mts";
 import meFn from "../netlify/functions/me.mts";
 
@@ -40,7 +42,7 @@ function eventDoc(id: string, overrides: Partial<EventDoc> = {}): EventDoc {
 }
 
 const ID = { music: "evt_000000000000000a", film: "evt_000000000000000b", past: "evt_000000000000000c",
-  removed: "evt_000000000000000d", later: "evt_000000000000000e" };
+  removed: "evt_000000000000000d", later: "evt_000000000000000e", calgary: "evt_000000000000000f" };
 
 before(async () => {
   mongod = await MongoMemoryServer.create();
@@ -49,7 +51,7 @@ before(async () => {
   db = await getDb();
   await setupIndexes(db);
   await db.collection<EventDoc>("events").insertMany([
-    eventDoc(ID.music),
+    eventDoc(ID.music, { city: "winnipeg", url: "https://www.ticketmaster.ca/holiday-jazz-night/event/0B00613E", source: "Ticketmaster" }),
     eventDoc(ID.film, {
       category: "Movies & Film", tags: ["family", "ongoing"], start: new Date(Date.now() - 2 * HOUR),
       end: new Date(Date.now() + 72 * HOUR), startLocal: "2026-11-23", endLocal: "2026-11-26", allDay: true, times: [],
@@ -59,6 +61,9 @@ before(async () => {
     eventDoc(ID.past, { start: new Date(Date.now() - 30 * HOUR), visibleUntil: new Date(Date.now() - 20 * HOUR) }),
     eventDoc(ID.removed, { status: "removed" }),
     eventDoc(ID.later, { start: new Date(Date.now() + 10 * 24 * HOUR), visibleUntil: new Date(Date.now() + 11 * 24 * HOUR) }),
+    // the other fixtures have no `city`, like the first city's events from before cities
+    eventDoc(ID.calgary, { city: "calgary", source: "AllEvents (incl. Facebook events)", url: "https://allevents.in/calgary/x/1",
+      ticketUrl: "https://www.winterfest.example/tickets" }),
   ]);
 });
 
@@ -91,6 +96,16 @@ describe("GET /api/events", () => {
     assert.deepEqual(await ids("limit=1"), [ID.film]);
   });
 
+  test("is one city's feed: the default city's, or ?city=, and 400 for a city we don't cover", async () => {
+    const feed = async (qs: string) => (await (await eventsFn(get(`/api/events${qs}`), ctx())).json()) as EventsResponse;
+    assert.deepEqual((await feed("?city=calgary")).events.map((e) => [e.id, e.city]), [[ID.calgary, "calgary"]]);
+    const winnipeg = await feed("?city=winnipeg");
+    assert.equal(winnipeg.city, "winnipeg");
+    assert.deepEqual(winnipeg.events.map((e) => e.id), [ID.film, ID.music, ID.later]);
+    assert.ok(winnipeg.events.every((e) => e.city === "winnipeg"));
+    assert.equal((await eventsFn(get("/api/events?city=atlantis"), ctx())).status, 400);
+  });
+
   test("rejects a bad date", async () => {
     assert.equal((await eventsFn(get("/api/events?from=soon"), ctx())).status, 400);
   });
@@ -103,6 +118,71 @@ describe("GET /api/events/:id", () => {
     assert.equal(((await ok.json()) as { title: string }).title, `Event ${ID.film}`);
     assert.equal((await eventFn(get("/api/events/evt_ffffffffffffffff"), ctx({ id: "evt_ffffffffffffffff" }))).status, 404);
     assert.equal((await eventFn(get("/api/events/nope"), ctx({ id: "nope" }))).status, 400);
+  });
+});
+
+describe("GET /api/cities", () => {
+  test("lists every city with its event count, cacheable", async () => {
+    const res = await citiesFn(get("/api/cities"), ctx());
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("netlify-cdn-cache-control") ?? "", /s-maxage=/);
+    const body = (await res.json()) as CitiesResponse;
+    assert.equal(body.defaultCity, "winnipeg");
+    const counts = Object.fromEntries(body.cities.map((c) => [c.slug, c.count]));
+    assert.deepEqual(counts, { winnipeg: 3, calgary: 1 });
+    const calgary = body.cities.find((c) => c.slug === "calgary");
+    assert.deepEqual([calgary?.name, calgary?.timezone], ["Calgary", "America/Edmonton"]);
+  });
+});
+
+describe("ticket links", () => {
+  const TM = "https://www.ticketmaster.ca/holiday-jazz-night/event/0B00613E";
+  const EB = "https://www.eventbrite.ca/e/winter-market-tickets-123456789";
+
+  test("seller pages get one; listing sites and junk don't", () => {
+    delete process.env.AFFILIATE_LINKS;
+    assert.deepEqual(ticketsFor(TM), { url: TM, seller: "Ticketmaster", affiliate: false });
+    assert.equal(ticketsFor(EB)?.seller, "Eventbrite");
+    assert.equal(ticketsFor("https://allevents.in/winnipeg/bombay-nights/1000020"), null);
+    assert.equal(ticketsFor("https://www.eventbrite.co.uk/e/fundraiser-tickets-2004790074079")?.seller, "Eventbrite");
+    assert.equal(ticketsFor("https://www.ticketmaster.com.au/event/1")?.seller, "Ticketmaster");
+    assert.equal(ticketsFor("https://notticketmaster.ca/x"), null); // look-alikes aren't the seller
+    assert.equal(ticketsFor("https://ticketmaster.ca.example.com/x"), null);
+    assert.equal(ticketsFor("https://www.ticketweb.ca/event/x")?.seller, "TicketWeb");
+    assert.equal(ticketsFor("https://tinyurl.com/abc", true)?.seller, "the organizer’s site");
+    assert.equal(ticketsFor("https://tinyurl.com/abc"), null); // only when a listing named it
+    assert.equal(ticketsFor("javascript:alert(1)"), null);
+    assert.equal(ticketsFor(""), null);
+  });
+
+  test("AFFILIATE_LINKS wraps that seller's links only, and a bad value is ignored", () => {
+    process.env.AFFILIATE_LINKS = JSON.stringify({ "ticketmaster.ca": "https://aff.example/c/1/2/3?u={url}", "eventbrite.ca": "http://not-https/{url}" });
+    try {
+      assert.deepEqual(ticketsFor(TM), { url: `https://aff.example/c/1/2/3?u=${encodeURIComponent(TM)}`, seller: "Ticketmaster", affiliate: true });
+      assert.deepEqual(ticketsFor(EB), { url: EB, seller: "Eventbrite", affiliate: false });
+      process.env.AFFILIATE_LINKS = "{not json";
+      assert.equal(ticketsFor(TM)?.affiliate, false);
+    } finally {
+      delete process.env.AFFILIATE_LINKS;
+    }
+  });
+
+  test("the API includes them", async () => {
+    const res = await eventFn(get(`/api/events/${ID.music}`), ctx({ id: ID.music }));
+    const music = (await res.json()) as ApiEvent;
+    assert.deepEqual(music.tickets, { url: music.url, seller: "Ticketmaster", affiliate: false });
+    const film = (await (await eventFn(get(`/api/events/${ID.film}`), ctx({ id: ID.film }))).json()) as ApiEvent;
+    assert.equal(film.tickets, null);
+    // films are bought per showing; showtimes saved before ticket links have one empty link per time
+    assert.deepEqual(film.showtimes[0].tickets, ["", ""]);
+  });
+
+  test("a listing's named seller is used, even on a site we don't know", async () => {
+    const res = await eventFn(get(`/api/events/${ID.calgary}`), ctx({ id: ID.calgary }));
+    const e = (await res.json()) as ApiEvent;
+    assert.deepEqual(e.tickets, { url: "https://www.winterfest.example/tickets", seller: "winterfest.example", affiliate: false });
+    const [inFeed] = ((await (await eventsFn(get("/api/events?city=calgary"), ctx())).json()) as EventsResponse).events;
+    assert.ok(validateEvent(inFeed), JSON.stringify(validateEvent.errors));
   });
 });
 

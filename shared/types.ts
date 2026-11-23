@@ -5,7 +5,7 @@ export const SWIPE_STATES = ["saved", "passed", "later"] as const;
 export type SwipeState = (typeof SWIPE_STATES)[number];
 
 export const ACTIONS = [
-  "view", "details", "save", "pass", "later", "unsave", "undo", "open_link", "share", "calendar",
+  "view", "details", "save", "pass", "later", "unsave", "undo", "open_link", "tickets", "share", "calendar",
 ] as const;
 export type Action = (typeof ACTIONS)[number];
 
@@ -15,18 +15,45 @@ export type Via = (typeof VIAS)[number];
 export interface Showtime {
   cinema: string;
   address: string;
-  date: string;    // "2026-11-23"
-  times: string[]; // "18:40", 24-hour, Winnipeg time
+  date: string;      // "2026-11-23"
+  times: string[];   // "18:40", 24-hour, the city's time
+  tickets: string[]; // for each time, in the same order: a link to buy that showing, or ""
+}
+
+/** A city the app covers (shared/cities.json), with how many events it has now. */
+export interface City {
+  slug: string;      // "winnipeg"
+  name: string;      // "Winnipeg"
+  region: string;    // "MB"
+  country: string;   // "CA"
+  timezone: string;  // "America/Winnipeg"
+  lat: number;
+  lon: number;
+  count: number;     // events in its feed now
+}
+
+export interface CitiesResponse {
+  defaultCity: string;
+  cities: City[];
+}
+
+/** Where to buy: the event's page when it sells tickets (Eventbrite, Ticketmaster), or the seller a listing
+ *  names (AllEvents does); null when neither. Films are bought per showing (Showtime.tickets). */
+export interface Tickets {
+  url: string;          // the event page, or an affiliate link to it
+  seller: string;       // "Ticketmaster"
+  affiliate: boolean;   // true: we may earn a commission on a sale, and the app says so
 }
 
 export interface ApiEvent {
   id: string;                 // "evt_" + 16 hex characters, stable across crawls
+  city: string;               // a City slug
   title: string;
   category: string;
   tags: string[];             // holiday, family, ongoing
   start: string;              // ISO instant (UTC), for sorting
   end: string | null;
-  startLocal: string;         // Winnipeg wall-clock as listed: "2026-11-23" or "2026-11-23T19:00"
+  startLocal: string;         // the city's wall-clock time as listed: "2026-11-23" or "2026-11-23T19:00"
   endLocal: string | null;
   allDay: boolean;            // listed with a date but no time
   times: string[];            // every listed start time that day, "19:00"
@@ -35,12 +62,14 @@ export interface ApiEvent {
   cost: "Free" | "Paid" | "Unknown";
   image: string | null;       // the source's image URL
   description: string;
-  url: string;                // the original listing
+  url: string;                // the original listing (for sharing and calendars)
+  tickets: Tickets | null;
   source: string;
   showtimes: Showtime[];      // films: the week, per cinema
 }
 
 export interface EventsResponse {
+  city: string;
   generatedAt: string;
   count: number;
   events: ApiEvent[];

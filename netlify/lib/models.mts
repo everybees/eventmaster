@@ -1,8 +1,11 @@
 import type { Action, ApiEvent, InteractionContext, Showtime, SwipeState } from "../../shared/types.ts";
+import { DEFAULT_CITY } from "./cities.mts";
+import { ticketsFor } from "./tickets.mts";
 
 /** An `events` document, as crawler/load_to_mongo.py writes it. */
 export interface EventDoc {
   _id: string;
+  city?: string | null;     // absent on the first city's events from before cities
   title: string;
   category: string;
   tags: string[];
@@ -18,8 +21,10 @@ export interface EventDoc {
   image: string | null;
   description: string;
   url: string;
+  ticketUrl?: string | null;      // where the listing says to buy (AllEvents pages name the seller)
+  ticketCheckedAt?: Date | null;
   source: string;
-  showtimes: Showtime[];
+  showtimes: (Omit<Showtime, "tickets"> & { tickets?: string[] })[]; // older crawls have no ticket links
   status: "active" | "removed";
   visibleUntil: Date;
   expireAt: Date;
@@ -51,6 +56,7 @@ export interface StateDoc {
 export function toApiEvent(d: EventDoc): ApiEvent {
   return {
     id: d._id,
+    city: d.city ?? DEFAULT_CITY,
     title: d.title,
     category: d.category,
     tags: d.tags ?? [],
@@ -66,7 +72,11 @@ export function toApiEvent(d: EventDoc): ApiEvent {
     image: d.image ?? null,
     description: d.description ?? "",
     url: d.url,
+    tickets: d.ticketUrl ? ticketsFor(d.ticketUrl, true) : ticketsFor(d.url),
     source: d.source,
-    showtimes: d.showtimes ?? [],
+    showtimes: (d.showtimes ?? []).map((s) => ({
+      ...s,
+      tickets: s.tickets?.length === s.times.length ? s.tickets : s.times.map(() => ""),
+    })),
   };
 }

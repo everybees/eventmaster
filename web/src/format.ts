@@ -1,11 +1,12 @@
 import type { ApiEvent, Showtime } from "../../shared/types.ts";
+import { cityName } from "./city.ts";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const TAG_LABELS: Record<string, string> = { holiday: "Holiday", family: "Family", ongoing: "On now" };
 const pad = (n: number) => String(n).padStart(2, "0");
 
-/** "2026-11-23" or "2026-11-23T19:00" (Winnipeg wall-clock, as listed) → a Date in the device's zone, for display only. */
+/** "2026-11-23" or "2026-11-23T19:00" (the city's wall-clock time, as listed) → a Date in the device's zone, for display only. */
 export function parseLocal(s: string): Date {
   const [date, time = "00:00"] = s.split("T");
   const [y, m, d] = date.split("-").map(Number);
@@ -48,7 +49,7 @@ export function priceNote(e: ApiEvent): string {
   return e.price.text || e.cost === "Free" ? `From the ${source} listing` : `Not in the ${source} listing`;
 }
 
-export const placeText = (e: ApiEvent) => [e.venue.name, e.venue.address].filter(Boolean).join(", ") || "Winnipeg";
+export const placeText = (e: ApiEvent) => [e.venue.name, e.venue.address].filter(Boolean).join(", ") || cityName(e.city);
 
 export const tagText = (e: ApiEvent) => e.tags.map((t) => TAG_LABELS[t] ?? t).join(" · ");
 
@@ -99,7 +100,8 @@ export function feedKey(e: ApiEvent, today: string): string {
 const icsText = (s: string) => s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
 const icsDate = (s: string) => s.slice(0, 10).replace(/-/g, "");
 
-/** A one-event calendar file. Times are "floating" (no zone): they mean Winnipeg time on a Winnipeg phone. */
+/** A one-event calendar file. Timed events are in UTC, so a Calgary show saved on a Winnipeg phone lands at the
+ *  right hour; all-day events are plain dates. */
 export function icsFor(e: ApiEvent): string {
   const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//wpg-events//EN", "BEGIN:VEVENT",
     `UID:${e.id}@wpg-events`, `DTSTAMP:${new Date().toISOString().replace(/[-:]|\.\d{3}/g, "")}`];
@@ -109,9 +111,9 @@ export function icsFor(e: ApiEvent): string {
     lines.push(`DTSTART;VALUE=DATE:${icsDate(e.startLocal)}`,
       `DTEND;VALUE=DATE:${last.getFullYear()}${pad(last.getMonth() + 1)}${pad(last.getDate())}`);
   } else {
-    const start = parseLocal(e.startLocal);
+    const start = new Date(e.start);
     const end = new Date(start.getTime() + 2 * 3600_000); // listings rarely give an end; assume two hours
-    const fmt = (d: Date) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T${pad(d.getHours())}${pad(d.getMinutes())}00`;
+    const fmt = (d: Date) => d.toISOString().replace(/[-:]|\.\d{3}/g, ""); // 20261124T020000Z
     lines.push(`DTSTART:${fmt(start)}`, `DTEND:${fmt(end)}`);
   }
   lines.push(`SUMMARY:${icsText(e.title)}`, `LOCATION:${icsText(placeText(e))}`, `URL:${e.url}`,

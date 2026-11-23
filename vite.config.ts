@@ -116,10 +116,10 @@ export default defineConfig(({ mode }) => {
           navigateFallbackDenylist: [/^\/api\//, /^\/\.netlify\//],
           runtimeCaching: [
             {
-              // the feed: fresh when online, the last copy when offline
-              urlPattern: ({ url }) => url.pathname === "/api/events",
+              // the feed (one per city) and the city list: fresh when online, the last copy when offline
+              urlPattern: ({ url }) => url.pathname === "/api/events" || url.pathname === "/api/cities",
               handler: "NetworkFirst",
-              options: { cacheName: "events", networkTimeoutSeconds: 4, expiration: { maxEntries: 4, maxAgeSeconds: 2 * 86400 } },
+              options: { cacheName: "events", networkTimeoutSeconds: 4, expiration: { maxEntries: 8, maxAgeSeconds: 2 * 86400 } },
             },
             {
               urlPattern: ({ url }) => url.pathname.startsWith("/.netlify/images"),
