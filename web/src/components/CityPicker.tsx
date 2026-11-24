@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { City } from "../../../shared/types.ts";
-import { nearestCity } from "../city.ts";
+import { countryName, nearestCity } from "../city.ts";
 import { IconLocate, IconX } from "./icons.tsx";
 
 interface Props {
@@ -59,7 +59,15 @@ export function CityPicker({ cities, current, firstRun, onPick, onClose, onRetry
   }
 
   const q = query.trim().toLowerCase();
-  const shown = (cities ?? []).filter((c) => !q || `${c.name} ${c.region}`.toLowerCase().includes(q));
+  const shown = (cities ?? [])
+    .filter((c) => !q || `${c.name} ${c.region} ${countryName(c.country)}`.toLowerCase().includes(q))
+    .toSorted((a, b) => a.name.localeCompare(b.name));
+  // more than one country: a heading for each, the current city's country first
+  const home = cities?.find((c) => c.slug === current)?.country;
+  const groups = new Map<string, City[]>();
+  for (const c of shown) groups.set(c.country, [...(groups.get(c.country) ?? []), c]);
+  const byCountry = [...groups].sort(([a], [b]) =>
+    Number(b === home) - Number(a === home) || countryName(a).localeCompare(countryName(b)));
 
   return (
     <dialog ref={dialog} className="sheet" aria-labelledby="city-title"
@@ -83,24 +91,29 @@ export function CityPicker({ cities, current, firstRun, onPick, onClose, onRetry
             <button type="button" className="link-btn locate" onClick={locate} disabled={locating}>
               <IconLocate size={18} /> {locating ? "Finding you…" : "Use my location"}
             </button>
-            {note && <p className="sheet-note" role="status">{note}</p>}
+            {note && <output className="sheet-note">{note}</output>}
             {cities.length > 6 && (
               <input type="search" className="city-search" placeholder="Search cities" aria-label="Search cities"
                 value={query} onChange={(e) => setQuery(e.target.value)} />
             )}
-            <ul className="city-list">
-              {shown.map((c) => (
-                <li key={c.slug}>
-                  <button type="button" className={`city-option${c.slug === suggested ? " suggested" : ""}`}
-                    aria-pressed={c.slug === current} onClick={() => onPick(c.slug)}>
-                    <span className="radio" aria-hidden="true" />
-                    <span>{c.name}, {c.region}</span>
-                    <span className="city-count">{c.count} {c.count === 1 ? "event" : "events"}</span>
-                  </button>
-                </li>
-              ))}
-              {shown.length === 0 && <li className="sheet-note">No city matches “{query}”.</li>}
-            </ul>
+            {byCountry.map(([country, list]) => (
+              <section key={country} className="city-group" aria-label={byCountry.length > 1 ? countryName(country) : undefined}>
+                {byCountry.length > 1 && <h3 className="city-country">{countryName(country)}</h3>}
+                <ul className="city-list">
+                  {list.map((c) => (
+                    <li key={c.slug}>
+                      <button type="button" className={`city-option${c.slug === suggested ? " suggested" : ""}`}
+                        aria-pressed={c.slug === current} onClick={() => onPick(c.slug)}>
+                        <span className="radio" aria-hidden="true" />
+                        <span>{c.region ? `${c.name}, ${c.region}` : c.name}</span>
+                        <span className="city-count">{c.count} {c.count === 1 ? "event" : "events"}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ))}
+            {shown.length === 0 && <p className="sheet-note">No city matches “{query}”.</p>}
             <p className="fine">Your location stays on this phone. It’s only used to find the nearest city.</p>
           </>
         )}

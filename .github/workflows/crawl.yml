@@ -26,7 +26,7 @@ jobs:
     timeout-minutes: 25
     strategy:
       fail-fast: false # one city's failing source doesn't stop the other cities
-      max-parallel: 2  # cities share sources (Eventbrite, AllEvents); go easy on them
+      max-parallel: 3  # cities share sources (AllEvents, CinemaClock); go easy on them
       matrix:
         city: ${{ fromJSON(needs.cities.outputs.list) }}
     name: crawl ${{ matrix.city }}
@@ -41,8 +41,8 @@ jobs:
 
       - run: pip install -r crawler/requirements.txt
 
-      # Fails the job (and GitHub emails you) when a source that returned events last run
-      # returns none (exit 2), or a run finds under half the city's usual events (exit 3).
+      # Fails the job (and GitHub emails you) when a source fails and finds nothing, or one that returned
+      # events last run returns none (exit 2), or a run finds under half the city's usual events (exit 3).
       - name: Crawl and load into MongoDB
         run: python crawler/load_to_mongo.py --city "${{ matrix.city }}"
         env:

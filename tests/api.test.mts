@@ -11,7 +11,7 @@ import type { Db } from "mongodb";
 import type { ApiEvent, CitiesResponse, EventsResponse, StateResponse } from "../shared/types.ts";
 import { closeDb, getDb } from "../netlify/lib/db.mts";
 import { setupIndexes } from "../netlify/lib/indexes.mts";
-import type { EventDoc } from "../netlify/lib/models.mts";
+import { soonestShowtimes, todayIn, type EventDoc } from "../netlify/lib/models.mts";
 import { ticketsFor } from "../netlify/lib/tickets.mts";
 import eventsFn from "../netlify/functions/events.mts";
 import eventFn from "../netlify/functions/event.mts";
@@ -121,6 +121,20 @@ describe("GET /api/events/:id", () => {
   });
 });
 
+describe("showtimes in the feed", () => {
+  test("are each cinema's next two days, from today in the city's time zone", () => {
+    const day = (n: number) => new Date(Date.UTC(2026, 10, 24 + n)).toISOString().slice(0, 10);
+    const show = (cinema: string, n: number) => ({ cinema, address: "", date: day(n), times: ["19:00"], tickets: [""] });
+    const all = [show("A", -1), show("A", 0), show("A", 1), show("A", 2), show("B", 3), show("B", 5), show("B", 4)];
+    assert.deepEqual(soonestShowtimes(all, day(0)).map((s) => `${s.cinema} ${s.date}`),
+      [`A ${day(0)}`, `A ${day(1)}`, `B ${day(3)}`, `B ${day(4)}`]);
+    // 03:45 UTC on Nov 24 is still Nov 23 in Winnipeg and Vancouver, but 00:15 on Nov 24 in St. John's (UTC-3:30)
+    const at = new Date("2026-11-24T03:45:00Z");
+    assert.deepEqual([todayIn("America/Winnipeg", at), todayIn("America/Vancouver", at), todayIn("America/St_Johns", at)],
+      ["2026-11-23", "2026-11-23", "2026-11-24"]);
+  });
+});
+
 describe("GET /api/cities", () => {
   test("lists every city with its event count, cacheable", async () => {
     const res = await citiesFn(get("/api/cities"), ctx());
@@ -129,7 +143,10 @@ describe("GET /api/cities", () => {
     const body = (await res.json()) as CitiesResponse;
     assert.equal(body.defaultCity, "winnipeg");
     const counts = Object.fromEntries(body.cities.map((c) => [c.slug, c.count]));
-    assert.deepEqual(counts, { winnipeg: 3, calgary: 1 });
+    assert.deepEqual([counts.winnipeg, counts.calgary, counts.toronto], [3, 1, 0]);
+    assert.equal(body.cities.length, 17);
+    const lagos = body.cities.find((c) => c.slug === "lagos");
+    assert.deepEqual([lagos?.country, lagos?.currency, lagos?.timezone], ["NG", "NGN", "Africa/Lagos"]);
     const calgary = body.cities.find((c) => c.slug === "calgary");
     assert.deepEqual([calgary?.name, calgary?.timezone], ["Calgary", "America/Edmonton"]);
   });
@@ -149,6 +166,7 @@ describe("ticket links", () => {
     assert.equal(ticketsFor("https://notticketmaster.ca/x"), null); // look-alikes aren't the seller
     assert.equal(ticketsFor("https://ticketmaster.ca.example.com/x"), null);
     assert.equal(ticketsFor("https://www.ticketweb.ca/event/x")?.seller, "TicketWeb");
+    assert.equal(ticketsFor("https://tix.africa/discover/afrobeats-night")?.seller, "Tix Africa");
     assert.equal(ticketsFor("https://tinyurl.com/abc", true)?.seller, "the organizer’s site");
     assert.equal(ticketsFor("https://tinyurl.com/abc"), null); // only when a listing named it
     assert.equal(ticketsFor("javascript:alert(1)"), null);

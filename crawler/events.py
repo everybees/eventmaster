@@ -3,9 +3,10 @@
 events.py — pull one city's upcoming events from several sources into one list.
 
 Cities and their sources are in shared/cities.json (Winnipeg is the default). For each city:
-  - Eventbrite (public discovery pages, schema.org JSON-LD)
   - AllEvents.in (aggregates many public Facebook events)
-  - Movies & film: Eventbrite/AllEvents film pages, and CinemaClock for showtimes at the city's cinemas
+  - Eventbrite (public discovery pages), only with CRAWL_EVENTBRITE=1: it refuses data-centre addresses,
+    so it works from a home connection but not from GitHub Actions
+  - Movies & film: AllEvents film pages, and CinemaClock for showtimes at the city's cinemas
   - Ticketmaster Discovery API (optional, free key: TICKETMASTER_API_KEY)
   - the city's own extra sources, e.g. Tourism Winnipeg and the Cinematheque
   - Any extra page you pass with --url (works on most sites using schema.org Event markup)
@@ -20,6 +21,7 @@ Usage:
   python3 crawler/events.py --category music --category arts   # matches category names or tags
   python3 crawler/events.py --category holiday                 # tags: holiday, family, ongoing
   TICKETMASTER_API_KEY=xxxx python3 crawler/events.py
+  CRAWL_EVENTBRITE=1 python3 crawler/events.py
   python3 crawler/events.py --category movies
   python3 crawler/events.py --url https://some-venue.ca/events
 """
@@ -41,6 +43,7 @@ DEFAULT_CITY = next(iter(CITIES))  # the first city (Winnipeg): its event IDs pr
 CITY = CITY_NAME = ""
 LOCAL_TZ = timezone.utc
 JSONLD_SOURCES, SOURCE_VENUES, CINEMACLOCK_THEATRES, TICKETMASTER_PLACE, CITY_VENUE_RULES = {}, {}, [], {}, []
+SILVERBIRD_CINEMAS = []  # [{"slug", "name", "address"}]: the city's Silverbird cinemas (Nigeria)
 # "Otium - 11/22/26 @ 3:00 pm": the Cinematheque puts each showtime in the title
 SHOWTIME_SUFFIX_RE = re.compile(r" - \d{1,2}/\d{1,2}/\d{2,4} ?@ ?\d{1,2}:\d{2} ?[ap]m$", re.I)  # on clean()ed titles
 
@@ -106,8 +109,9 @@ def norm_ld(ev, source):
         else:
             addr = str(a or "")
     offers = first(ev.get("offers")) or {}
-    price = ""
+    price, currency = "", ""
     if isinstance(offers, dict):
+        currency = offers.get("priceCurrency") or ""
         lo, hi = offers.get("lowPrice") or offers.get("price"), offers.get("highPrice")
         if lo not in (None, ""):
             price = f"{lo}" + (f"–{hi}" if hi and hi != lo else "")
@@ -125,6 +129,7 @@ def norm_ld(ev, source):
         "venue": clean(venue),
         "address": clean(addr),
         "price": price,
+        "currency": currency if re.fullmatch(r"[A-Z]{3}", str(currency)) else "",
         "url": first(ev.get("url")) or "",
         "source": source,
         "description": clean(ev.get("description")),
@@ -174,6 +179,7 @@ def ticketmaster(start, end, keyword=None):
             "venue": v.get("name", ""),
             "address": (v.get("address") or {}).get("line1", ""),
             "price": f"{pr.get('min','')}–{pr.get('max','')}" if pr else "",
+            "currency": pr.get("currency", ""),
             "url": e.get("url", ""),
             "source": "Ticketmaster",
             "description": "",
@@ -282,19 +288,46 @@ def cinemaclock(delay):
     rows = []
     for path, f in films.items():
         if f["cinemas"]:
-            rows.append(cc_film_row(path, f, cc_synopsis(path)))
-            time.sleep(delay)
+            rows.append(film_row(CINEMACLOCK + path, "CinemaClock (cinema showtimes)", f,
+                                 *film_synopsis(CINEMACLOCK + path, delay)))
     return rows
 
-def cc_synopsis(path):
-    """The synopsis is only on the film's own page."""
-    try:
-        s = CC_SYNOPSIS_RE.search(fetch(CINEMACLOCK + path))
-    except Exception:
-        return ""
-    return clean(s.group(1)) if s else ""
+# Film synopses barely change and the same film plays in every city, so load_to_mongo.py fills this
+# with the ones already stored ({film page URL: (synopsis, when it was fetched)}) and only new or
+# week-old ones are fetched.
+SYNOPSES = {}
+SYNOPSIS_STATS = collections.Counter()  # "reused" / "fetched", for the run's report
 
-def cc_film_row(path, f, synopsis):
+def film_synopsis(url, delay):
+    """(synopsis, when fetched) for a film: from SYNOPSES, else from its page (when fetched is None, it failed)."""
+    if url in SYNOPSES:
+        SYNOPSIS_STATS["reused"] += 1
+        return SYNOPSES[url]
+    SYNOPSIS_STATS["fetched"] += 1
+    text = page_synopsis(url)
+    time.sleep(delay)
+    if text is None:
+        return "", None
+    SYNOPSES[url] = (text, datetime.now(timezone.utc))
+    return SYNOPSES[url]
+
+OG_DESCRIPTION_RE = re.compile(r'<meta property="og:description" content="([^"]*)"')
+SB_NOTE_RE = re.compile(r"\s*\*?\s*NB:.*$", re.I | re.S)  # "*NB: Showtime is subject to change"
+
+def page_synopsis(url):
+    """A film's synopsis, from its own page on CinemaClock or Silverbird. None when the page didn't load."""
+    try:
+        page = fetch(url)
+    except Exception:
+        return None
+    if url.startswith(CINEMACLOCK):
+        s = CC_SYNOPSIS_RE.search(page)
+        return clean(s.group(1)) if s else ""
+    s = OG_DESCRIPTION_RE.search(page)
+    return SB_NOTE_RE.sub("", clean(s.group(1))) if s else ""
+
+def film_row(url, source, f, synopsis, synopsis_checked=None):
+    """One film's row: its cinemas' showings, merged across cinemas (CinemaClock or Silverbird)."""
     cinemas = sorted(f["cinemas"])
     dates = sorted(d for _, shows in f["cinemas"].values() for d in shows)
     nxt = []
@@ -311,19 +344,106 @@ def cc_film_row(path, f, synopsis):
         "venue": cinemas[0] if len(cinemas) == 1 else f"{len(cinemas)} cinemas",
         "address": f["cinemas"][cinemas[0]][0] if len(cinemas) == 1 else ", ".join(cinemas),
         "price": "",
-        "url": CINEMACLOCK + path,
-        "source": "CinemaClock (cinema showtimes)",
+        "url": url,
+        "source": source,
+        "_film": True,  # keyed by its page, not its title and date (see stable_id)
         "description": f"{details}. {synopsis}" if synopsis else details,
         "image": f["poster"],
         "category_hint": "Movies & Film",
         "tag_hints": ["family"] if f["family"] else [],
         "showtimes": " | ".join(nxt),  # each cinema's next day with showings
+        "_synopsis": synopsis, "_synopsis_checked": synopsis_checked,
         # the whole week, structured, for the database
         "_showtimes": [{"cinema": c, "address": f["cinemas"][c][0], "date": d.isoformat(),
                         "times": [f"{h % 24:02d}:{m:02d}" for h, m in sorted(f["cinemas"][c][1][d])],
                         "tickets": [link for _, link in sorted(f["cinemas"][c][1][d].items())]}
                        for c in cinemas for d in sorted(f["cinemas"][c][1])],
     }
+
+
+# ---------- Silverbird Cinemas (Nigeria): the week's showtimes on each cinema's page ----------
+# Their pages list each film with its times for the cinema week (Friday to Thursday), each time linking
+# to its booking page. robots.txt allows crawling (content signals: search=yes).
+SILVERBIRD = "https://silverbirdcinemas.com"
+SB_FILM_RE = re.compile(r'class="entry-title"><a href="([^"]+)">(.*?)</a>', re.S)
+SB_DAY_RE = re.compile(r"<strong>([A-Z/]+):\s*</strong></span>\s*<strong>(.*?)</strong>", re.S)
+SB_TIME_RE = re.compile(r'(?:<a href=\s*"([^"]+)"[^>]*>\s*)?\b(\d{1,2}):(\d{2})\s*([ap]m)\b(?:\s*\(([^)]+)\))?', re.I)
+SB_RELEASE_RE = re.compile(r"<span>Release:</span>\s*([A-Z][a-z]{2} \d{1,2}, \d{4})")
+SB_RUNTIME_RE = re.compile(r'class="entry-date">.*?</i>\s*([^<]+)</div>', re.S)
+SB_GENRE_RE = re.compile(r'/genre/[^"]+/">([^<]+)</a>')
+SB_LANGUAGE_RE = re.compile(r"<span>Language:</span>\s*([^<]+)")
+SB_POSTER_RE = re.compile(r'<img[^>]+src="([^"]+)"')
+SB_NOT_GENRES = {"Now Showing", "Coming Soon", "Slider"}
+SB_WEEKDAY = {"FRI": 0, "SAT": 1, "SUN": 2, "MON": 3, "TUE": 4, "TUES": 4, "WED": 5, "THU": 6, "THUR": 6, "THURS": 6}
+
+def sb_runtime(text):
+    """"02 hours 38 minutes" -> "2h 38m"."""
+    h = re.search(r"(\d+)\s*hour", text)
+    m = re.search(r"(\d+)\s*min", text)
+    return " ".join(filter(None, [f"{int(h.group(1))}h" if h else "", f"{int(m.group(1))}m" if m and int(m.group(1)) else ""]))
+
+def sb_cinema(slug, today):
+    """The films on one Silverbird cinema's page: [{url, title, shows: {date: {(h, m): booking link}}, …}]."""
+    page = fetch(f"{SILVERBIRD}/cinema/{slug}/")
+    films = []
+    for block in page.split('<article class="entry-item">')[1:]:
+        block = block.split("</article>")[0]
+        t = SB_FILM_RE.search(block)
+        if not t:
+            continue
+        rel = SB_RELEASE_RE.search(block)
+        release = datetime.strptime(rel.group(1), "%b %d, %Y").date() if rel else None
+        # the weekdays are those of the film's cinema week: this one, or its opening week if it isn't out yet
+        start = max(today, release) if release else today
+        friday = start - timedelta(days=(start.weekday() - 4) % 7)
+        shows, formats = {}, set()
+        for days, times in SB_DAY_RE.findall(block):
+            for day in days.split("/"):
+                if day not in SB_WEEKDAY:
+                    continue
+                date = friday + timedelta(days=SB_WEEKDAY[day])
+                if date < today or (release and date < release):
+                    continue
+                for link, h, m, ampm, fmt in SB_TIME_RE.findall(times):
+                    when = (int(h) % 12 + (12 if ampm.lower() == "pm" else 0), int(m))
+                    shows.setdefault(date, {})[when] = shows.get(date, {}).get(when) or link.strip()
+                    if fmt:
+                        formats.add(clean(fmt))
+        genres = [g for g in (clean(x) for x in SB_GENRE_RE.findall(block)) if g not in SB_NOT_GENRES]
+        runtime, language = SB_RUNTIME_RE.search(block), SB_LANGUAGE_RE.search(block)
+        poster = SB_POSTER_RE.search(block)
+        films.append({
+            "url": t.group(1),
+            "title": clean(re.sub(r"\s*\(Release [^)]*\)\s*$", "", clean(t.group(2)))),
+            "shows": shows, "formats": formats,
+            "info": " · ".join(filter(None, [sb_runtime(runtime.group(1)) if runtime else "", ", ".join(genres),
+                                             clean(language.group(1)) if language else ""])),
+            "rating": "", "cast": "",
+            # the full-size poster: the thumbnail's name without its "-164x220" size
+            "poster": re.sub(r"-\d+x\d+(\.\w+)$", r"\1", poster.group(1)) if poster else "",
+            "family": any(g in ("Family", "Animation") for g in genres),
+        })
+    return films
+
+def silverbird(delay):
+    """One row per film now showing at the city's Silverbird cinemas, as cinemaclock() does."""
+    today = datetime.now(LOCAL_TZ).date()
+    films = {}
+    for cinema in SILVERBIRD_CINEMAS:
+        try:
+            movies = sb_cinema(cinema["slug"], today)
+        except Exception as ex:
+            print(f"  ! Silverbird {cinema['slug']}: {ex}", file=sys.stderr)
+            continue
+        finally:
+            time.sleep(delay)
+        for m in movies:
+            f = films.setdefault(m["url"], dict(m, cinemas={}, formats=set()))
+            f["formats"] |= m["formats"]
+            if m["shows"]:
+                f["cinemas"][cinema["name"]] = (cinema.get("address", ""), m["shows"])
+    return [film_row(url, "Silverbird Cinemas", f, *film_synopsis(url, delay))
+            for url, f in films.items() if f["cinemas"]]
 
 
 # ---------- AllEvents: the real seller behind a listing ----------
@@ -389,9 +509,9 @@ def dedupe_key(e):
 def stable_id(e):
     """The same event gets the same ID on every run, whichever source happened to list it first,
     so saved events and interaction history survive re-crawls. Films are keyed by their CinemaClock
-    page, exhibitions and other ongoing runs by title, everything else by title + date, and all of
+    or Silverbird page, exhibitions and other ongoing runs by title, everything else by title + date, and all of
     them by city (the same film plays in every city), except in the first city, whose IDs came first."""
-    if e.get("source", "").startswith("CinemaClock"):
+    if e.get("_film") or e.get("source", "").startswith("CinemaClock"):
         key = e["url"]
     else:
         title, date = dedupe_key(e)
@@ -579,7 +699,11 @@ def crawl(a, now, end):
 
     # sources that aren't schema.org pages; a source with an env var needs a free key
     for label, env, fetch_api in (("Ticketmaster", "TICKETMASTER_API_KEY", lambda: ticketmaster(now, end, a.search)),
-                                  ("CinemaClock showtimes", None, lambda: cinemaclock(a.delay))):
+                                  ("CinemaClock showtimes", None, lambda: cinemaclock(a.delay)),
+                                  ("Silverbird showtimes", None, lambda: silverbird(a.delay))):
+        if ((label == "Ticketmaster" and not TICKETMASTER_PLACE) or (label.startswith("CinemaClock") and not CINEMACLOCK_THEATRES)
+                or (label.startswith("Silverbird") and not SILVERBIRD_CINEMAS)):
+            continue  # not in this city (Ticketmaster doesn't sell there; CinemaClock is Canada only; Silverbird Nigeria)
         if env and not os.environ.get(env):
             report.append(f"  {label}: skipped (set {env})")
             continue
@@ -595,23 +719,33 @@ def crawl(a, now, end):
 def use_city(slug):
     """Point every city setting above at one city in shared/cities.json. A process crawls one city."""
     global CITY, CITY_NAME, LOCAL_TZ, JSONLD_SOURCES, SOURCE_VENUES, CINEMACLOCK_THEATRES, TICKETMASTER_PLACE
-    global CITY_VENUE_RULES
+    global CITY_VENUE_RULES, SILVERBIRD_CINEMAS
     c = CITIES[slug]
     k = c["crawl"]
-    eb, ae = k["eventbrite"], k["allevents"]
+    eb, ae = k.get("eventbrite"), k["allevents"]
     CITY, CITY_NAME, LOCAL_TZ = slug, c["name"], ZoneInfo(c["timezone"])
-    JSONLD_SOURCES = {
-        "Eventbrite": [f"https://www.eventbrite.ca/d/{eb}/all-events/?page={{page}}"],
+    # AllEvents' usual pages, unless the city lists its own (in Lagos and Abuja only the city's home page
+    # carries the events' data)
+    JSONLD_SOURCES = k.get("allEventsPages") or {
         "AllEvents (incl. Facebook events)": [f"https://allevents.in/{ae}/all?page={{page}}"],
-        # film screenings; the general pages above miss most of them
-        "Eventbrite (film)": [f"https://www.eventbrite.ca/d/{eb}/film-and-media--events/?page={{page}}"],
+        # film screenings; the general page above misses most of them
         "AllEvents (movies & film)": [f"https://allevents.in/{ae}/movies?page={{page}}",
                                       f"https://allevents.in/{ae}/film?page={{page}}"],
-        **k.get("sources", {}),
     }
+    JSONLD_SOURCES = {**JSONLD_SOURCES, **k.get("sources", {})}
+    # Eventbrite refuses requests from data centres (GitHub's runners get "405 Not Allowed"), so it's off
+    # unless asked for, e.g. on a crawl from a home connection: CRAWL_EVENTBRITE=1
+    if eb and os.environ.get("CRAWL_EVENTBRITE") == "1":
+        site = "www.eventbrite.ca" if c["country"] == "CA" else "www.eventbrite.com"
+        JSONLD_SOURCES = {
+            "Eventbrite": [f"https://{site}/d/{eb}/all-events/?page={{page}}"],
+            "Eventbrite (film)": [f"https://{site}/d/{eb}/film-and-media--events/?page={{page}}"],
+            **JSONLD_SOURCES,
+        }
     SOURCE_VENUES = {name: tuple(v) for name, v in k.get("sourceVenues", {}).items()}
     CINEMACLOCK_THEATRES = list(k.get("cinemaclock", []))
-    TICKETMASTER_PLACE = dict(k["ticketmaster"])
+    SILVERBIRD_CINEMAS = list(k.get("silverbird", []))
+    TICKETMASTER_PLACE = dict(k.get("ticketmaster") or {})
     CITY_VENUE_RULES = [(cat, _rx(p)) for cat, p in k.get("venueRules", {}).items()]
     unknown = {cat for cat, _ in CITY_VENUE_RULES} - set(CATEGORIES)
     assert not unknown, f"{slug}: venueRules use unknown categories {unknown}"

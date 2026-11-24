@@ -16,7 +16,7 @@ export interface EventDoc {
   allDay: boolean;
   times: string[];
   venue: { name: string; address: string };
-  price: { text: string; free: boolean | null };
+  price: { text: string; free: boolean | null; currency?: string | null };
   cost: "Free" | "Paid" | "Unknown";
   image: string | null;
   description: string;
@@ -53,6 +53,27 @@ export interface StateDoc {
   updatedAt: Date;
 }
 
+/**
+ * A film's showings in the feed: each cinema's next `days` dates from `today` on. The app shows each cinema's
+ * next day; two days cover a feed cached across midnight. A big city's week of showtimes would otherwise
+ * make up most of the feed. GET /api/events/:id has them all.
+ */
+export function soonestShowtimes(showtimes: Showtime[], today: string, days = 2): Showtime[] {
+  const taken = new Map<string, number>();
+  return showtimes
+    .filter((s) => s.date >= today)
+    .toSorted((a, b) => a.date.localeCompare(b.date))
+    .filter((s) => {
+      const n = taken.get(s.cinema) ?? 0;
+      taken.set(s.cinema, n + 1);
+      return n < days;
+    });
+}
+
+/** "2026-11-24" in a time zone. */
+export const todayIn = (timeZone: string, now = new Date()) =>
+  new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+
 export function toApiEvent(d: EventDoc): ApiEvent {
   return {
     id: d._id,
@@ -67,7 +88,7 @@ export function toApiEvent(d: EventDoc): ApiEvent {
     allDay: Boolean(d.allDay),
     times: d.times ?? [],
     venue: { name: d.venue?.name ?? "", address: d.venue?.address ?? "" },
-    price: { text: d.price?.text ?? "", free: d.price?.free ?? null },
+    price: { text: d.price?.text ?? "", free: d.price?.free ?? null, currency: d.price?.currency ?? null },
     cost: d.cost ?? "Unknown",
     image: d.image ?? null,
     description: d.description ?? "",

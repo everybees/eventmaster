@@ -1,10 +1,10 @@
 import type { Config } from "@netlify/functions";
 import type { Filter } from "mongodb";
 import type { EventsResponse } from "../../shared/types.ts";
-import { cityFilter, DEFAULT_CITY, isCity } from "../lib/cities.mts";
+import { cityFilter, cityInfo, DEFAULT_CITY, isCity } from "../lib/cities.mts";
 import { getDb } from "../lib/db.mts";
 import { error, FEED_CACHE, handler, json } from "../lib/http.mts";
-import { toApiEvent, type EventDoc } from "../lib/models.mts";
+import { soonestShowtimes, toApiEvent, todayIn, type EventDoc } from "../lib/models.mts";
 
 const DEFAULT_LIMIT = 300;
 const MAX_LIMIT = 500;
@@ -38,7 +38,9 @@ export default handler(async (req) => {
 
   const db = await getDb();
   const docs = await db.collection<EventDoc>("events").find(filter).sort({ start: 1, _id: 1 }).limit(limit).toArray();
-  const body: EventsResponse = { city, generatedAt: now.toISOString(), count: docs.length, events: docs.map(toApiEvent) };
+  const today = todayIn(cityInfo(city).timezone, now);
+  const events = docs.map(toApiEvent).map((e) => (e.showtimes.length ? { ...e, showtimes: soonestShowtimes(e.showtimes, today) } : e));
+  const body: EventsResponse = { city, generatedAt: now.toISOString(), count: docs.length, events };
   return json(body, { headers: FEED_CACHE });
 });
 

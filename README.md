@@ -1,9 +1,13 @@
 # Winnipeg Events
 
 Swipe through what's on in your city: concerts, films, markets, theatre and more, gathered from
-Eventbrite, AllEvents, Ticketmaster, CinemaClock (Cineplex, Landmark and independent cinemas) and each
-city's own sources, such as Tourism Winnipeg. Right saves, left passes, up shows details, down saves it for
-later. Cities so far: Winnipeg and Calgary ([add one](#cities)).
+AllEvents, Ticketmaster, CinemaClock (Cineplex, Landmark and independent cinemas) and each city's own
+sources, such as Tourism Winnipeg. Right saves, left passes, up shows details, down saves it for later.
+
+Cities ([add one](#cities)):
+- **Canada:** Winnipeg, Calgary, Edmonton, Halifax, Hamilton, Kelowna, Kitchener-Waterloo, London, Ottawa,
+  Regina, Saskatoon, St. John's, Toronto, Vancouver and Victoria
+- **Nigeria:** Lagos and Abuja (films from Silverbird Cinemas)
 
 ## How it fits together
 
@@ -65,17 +69,45 @@ Each city is an entry in `shared/cities.json`. The crawler, the API (`GET /api/c
 crawl all read it. The first entry is the default city. To add a city:
 
 1. Copy an entry and fill in:
-   - **Name, region, time zone and coordinates.** "Use my location" picks the nearest city within 150 km.
+   - **Name, region (may be empty), country, time zone, currency and coordinates.** "Use my location" picks
+     the nearest city within 150 km. The currency is for prices whose listing doesn't name one.
    - **Eventbrite and AllEvents city names:** the city part of their URLs, e.g. `canada--calgary` and `calgary`.
-   - **Ticketmaster's city name.**
-   - **Cinemas:** CinemaClock lists a city's cinemas, nearest first, at
+2. Where they apply (leave them out otherwise):
+   - **`ticketmaster`:** its city name, where Ticketmaster sells (North America, Europe, Australia and NZ)
+   - **`cinemaclock`:** the city's cinemas (Canada only). CinemaClock lists them, nearest first, at
      `https://www.cinemaclock.com/<city>-<province>/movie-theaters`. Use the part after `/movie-theaters/` in
-     each cinema's link, and leave out the outlying towns.
-2. Optionally:
+     each cinema's link. Keep the ones whose address is in the city (or its own districts, like Scarborough
+     or Kanata), and leave out neighbouring towns and closed cinemas.
+   - **`silverbird`:** the city's Silverbird cinemas (Nigeria): `{slug, name, address}`, the slug being the part
+     after `/cinema/` in `https://silverbirdcinemas.com/cinema/<slug>/`
+   - **`allEventsPages`:** AllEvents pages to use instead of the usual `/<city>/all` and film pages. Check that
+     the usual pages carry event data; in Lagos and Abuja only the city's home page does.
    - **The city's own event pages** that use schema.org markup (`sources`)
    - **`venueRules`** for well-known venues that mostly host one kind of event
 3. Check it: `python3 crawler/events.py --city <slug> --days 7`
-4. Push. The next scheduled crawl includes the new city, as a job of its own.
+4. Push. The next scheduled crawl includes the new city, as a job of its own (three cities run at a time).
+
+French-language cities (Montréal, Québec City) need French keywords in the category rules first; without them
+most of their events would land in "Other".
+
+**Prices** show in the listing's own currency when it names one (a Lagos show priced in US dollars reads
+"US$25"), else in the city's (₦, $).
+
+**Nigeria:** AllEvents is the source for now. Eventbrite has many Lagos and Abuja events but only works from a
+home connection (see below). tix.africa sits behind Cloudflare's bot check, so it can't be crawled; its events
+arrive through AllEvents, with "Get tickets on Tix Africa" buttons, and a partner feed would be the way to list
+them all.
+
+Films in Nigeria come from **Silverbird Cinemas** (`silverbird` in a city's entry: Galleria and Ikeja in Lagos,
+Jabi and the Entertainment Centre in Abuja). Each cinema's page lists the week's showtimes (Friday to Thursday),
+most linking to that showing's booking page. The other chains don't publish theirs in a way the crawler should
+use: **Filmhouse** loads showtimes from its ticketing provider's private API (its pages only list the films), and
+**Genesis** shows only the rest of today's in the page, loading other days through its site's internal endpoint.
+Ask them for a feed before adding either.
+
+**Eventbrite** is off by default: it refuses requests from data centres, GitHub's included. It works from a home
+connection: `CRAWL_EVENTBRITE=1 python3 crawler/load_to_mongo.py --city <slug>`. Its events still reach the app
+through AllEvents, which lists many of them and links to their Eventbrite ticket pages.
 
 Event IDs include the city, except Winnipeg's, which predate cities and stay as they were.
 
@@ -116,14 +148,14 @@ stopped returning events or most of the crawl failed; the run's output says whic
 
 | | |
 |---|---|
-| `GET /api/events` | A city's feed, soonest first. `city` (default: the first city), and filters `category`, `tag`, `from`, `to`, `limit` (≤ 500). CDN-cached. |
+| `GET /api/events` | A city's feed, soonest first. `city` (default: the first city), and filters `category`, `tag`, `from`, `to`, `limit` (≤ 500). Films carry each cinema's next two days of showtimes. CDN-cached. |
 | `GET /api/cities` | Every city, with its event count. CDN-cached. |
-| `GET /api/events/:id` | One event, including recently removed ones |
+| `GET /api/events/:id` | One event, including recently removed ones, with all its showtimes |
 | `POST /api/interactions` | `{ deviceId, items: [{ id, eventId, action, at, context }] }`, ≤ 50 items. Safe to retry. |
 | `GET /api/me/state` | This device's saved / passed / later events (`X-Device-Id` header) |
 | `DELETE /api/me` | Delete everything stored for this device |
 
-Actions: `view`, `details`, `save`, `pass`, `later`, `unsave`, `undo`, `open_link`, `tickets`, `share`, `calendar`.
+Actions: `view`, `details`, `save`, `pass`, `later`, `unsave`, `undo`, `open_link`, `tickets`, `map`, `share`, `calendar`.
 
 ## Tickets
 
@@ -159,7 +191,12 @@ Canadian and US advertising rules expect.
 | `runs` | crawl | Per-source counts, errors and status |
 
 Every event has a `city` (Winnipeg's from before cities have none, and count as Winnipeg's). Each city's crawl
-only marks its own events removed, and compares its total with that city's last run.
+only marks its own events removed, and compares its total with that city's last run. A run is an alert (the
+job fails, and GitHub emails you) when a source errors and finds nothing, or a source that found events last
+time finds none.
+
+Films keep their synopsis separately (`synopsis`, `synopsisCheckedAt`). Every city's crawl reuses any synopsis
+fetched in the past week, in any city, so each film's page is fetched about once a week, not every run.
 
 Times are stored twice. `start`/`end` are UTC for sorting. `startLocal`/`times` are the city's wall-clock time
 as listed, and the app displays those, so outdated time-zone rules can't shift them.
@@ -168,7 +205,8 @@ as listed, and the app displays those, so outdated time-zone rules can't shift t
 
 There are no accounts yet. Each device gets a random ID. Interactions carry no name, email, IP or location,
 and the app has a switch to stop sending them, plus a "Delete my data" button. "Use my location" asks the
-browser for a position and works out the nearest city on the phone; the position is never sent anywhere. Before a public launch, add a
+browser for a position and works out the nearest city on the phone; the position is never sent anywhere. Venues
+and cinemas link to Google Maps; Google gets nothing unless someone taps one. Before a public launch, add a
 privacy notice: Canada's PIPEDA expects meaningful consent.
 
 ## Not done yet
@@ -180,7 +218,11 @@ privacy notice: Canada's PIPEDA expects meaningful consent.
   - replacing the dead True North source with the Burton Cummings Theatre page
 - **Rate limiting** on `POST /api/interactions`.
 - **A "You" tab** for the city and privacy settings (they're in the header and the Saved tab for now).
+- **Venue rules and local sources** for the newer cities (only Winnipeg and Calgary have them).
+- **Start times** for AllEvents events, from the event page the crawler already opens for ticket links.
 - **Accounts:** link a device's `deviceId` to a `userId` at sign-in, and sync `userEventState`.
+- **More Nigerian cinemas:** Filmhouse and Genesis, through a feed from them (see [Cities](#cities)).
 - **Before going public:**
   - review each source's terms of use
+  - a privacy notice for each country: PIPEDA in Canada, the Nigeria Data Protection Act (2023) in Nigeria
   - decide between linking organizers' images and re-hosting them through the image CDN

@@ -5,7 +5,7 @@ export const SWIPE_STATES = ["saved", "passed", "later"] as const;
 export type SwipeState = (typeof SWIPE_STATES)[number];
 
 export const ACTIONS = [
-  "view", "details", "save", "pass", "later", "unsave", "undo", "open_link", "tickets", "share", "calendar",
+  "view", "details", "save", "pass", "later", "unsave", "undo", "open_link", "tickets", "map", "share", "calendar",
 ] as const;
 export type Action = (typeof ACTIONS)[number];
 
@@ -27,6 +27,7 @@ export interface City {
   region: string;    // "MB"
   country: string;   // "CA"
   timezone: string;  // "America/Winnipeg"
+  currency: string;  // "CAD": for prices whose listing doesn't say
   lat: number;
   lon: number;
   count: number;     // events in its feed now
@@ -58,7 +59,7 @@ export interface ApiEvent {
   allDay: boolean;            // listed with a date but no time
   times: string[];            // every listed start time that day, "19:00"
   venue: { name: string; address: string };
-  price: { text: string; free: boolean | null };
+  price: { text: string; free: boolean | null; currency: string | null }; // currency: "CAD", "USD"…, when listed
   cost: "Free" | "Paid" | "Unknown";
   image: string | null;       // the source's image URL
   description: string;

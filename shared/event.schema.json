@@ -29,8 +29,12 @@
       "properties": { "name": { "type": "string" }, "address": { "type": "string" } }
     },
     "price": {
-      "type": "object", "additionalProperties": false, "required": ["text", "free"],
-      "properties": { "text": { "type": "string" }, "free": { "type": ["boolean", "null"] } }
+      "type": "object", "additionalProperties": false, "required": ["text", "free", "currency"],
+      "properties": {
+        "text": { "type": "string" },
+        "free": { "type": ["boolean", "null"] },
+        "currency": { "oneOf": [{ "type": "string", "pattern": "^[A-Z]{3}$" }, { "type": "null" }] }
+      }
     },
     "cost": { "enum": ["Free", "Paid", "Unknown"] },
     "image": { "type": ["string", "null"] },

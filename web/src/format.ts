@@ -1,5 +1,5 @@
 import type { ApiEvent, Showtime } from "../../shared/types.ts";
-import { cityName } from "./city.ts";
+import { cityCurrency, cityName } from "./city.ts";
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -37,11 +37,35 @@ export function time12(hhmm: string): string {
 
 export const shortSource = (source: string) => source.replace(/\s*\(.*\)$/, "");
 
+/**
+ * "25" → "$25", "5000" in NGN → "₦5,000", "22.64" → "$22.64". The city's own currency gets its short symbol
+ * ($ in Canada, ₦ in Nigeria); any other gets an unambiguous one (US$, £), so a Lagos show priced in dollars
+ * doesn't read as naira or Canadian dollars.
+ */
+function money(amount: string, currency: string | null, local: boolean): string {
+  const n = Number(amount);
+  if (!Number.isFinite(n)) return amount;
+  if (!currency) return `$${amount}`; // no currency known: as before
+  const cents = n % 1 !== 0;
+  try {
+    return new Intl.NumberFormat("en-CA", {
+      style: "currency", currency, currencyDisplay: local ? "narrowSymbol" : "symbol",
+      minimumFractionDigits: cents ? 2 : 0, maximumFractionDigits: cents ? 2 : 0,
+    }).format(n);
+  } catch {
+    return `${currency} ${amount}`;
+  }
+}
+
 export function priceText(e: ApiEvent): string {
   if (e.cost === "Free") return "Free";
   const t = e.price.text;
   if (!t || t.startsWith("Paid")) return "Price on listing";
-  return /^\d/.test(t) ? `$${t.replace("–", "–$")}` : t;
+  if (!/^\d/.test(t)) return t;
+  // the listing's own currency (a Lagos show may be priced in USD), else the city's
+  const local = cityCurrency(e.city);
+  const currency = e.price.currency ?? local;
+  return t.split("–").map((part) => money(part.trim(), currency, currency === local)).join("–");
 }
 
 export function priceNote(e: ApiEvent): string {
@@ -50,6 +74,26 @@ export function priceNote(e: ApiEvent): string {
 }
 
 export const placeText = (e: ApiEvent) => [e.venue.name, e.venue.address].filter(Boolean).join(", ") || cityName(e.city);
+
+/** Venues that aren't places: nothing to show on a map. */
+const NO_PLACE_RE = /^(online|virtual|zoom|tba|tbd|to be announced|location tba)\b/i;
+
+/**
+ * A Google Maps search for a place (it opens the Maps app where there is one). Plain links need no API key,
+ * and Google learns nothing unless the person taps one. The city is added unless the address already has it.
+ */
+export function mapsUrl(place: string, city: string): string {
+  const query = !city || place.toLowerCase().includes(city.toLowerCase()) ? place : `${place}, ${city}`;
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
+
+/** The map link for an event's venue, or null: no venue, online, or a film at several cinemas (each cinema gets its own). */
+export function venueMapUrl(e: ApiEvent): string | null {
+  const { name, address } = e.venue;
+  if ((!name && !address) || NO_PLACE_RE.test(name.trim())) return null;
+  if (new Set(e.showtimes.map((s) => s.cinema)).size > 1) return null;
+  return mapsUrl([name, address].filter(Boolean).join(", "), cityName(e.city));
+}
 
 export const tagText = (e: ApiEvent) => e.tags.map((t) => TAG_LABELS[t] ?? t).join(" · ");
 

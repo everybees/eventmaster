@@ -4,12 +4,13 @@
     "region": "MB",
     "country": "CA",
     "timezone": "America/Winnipeg",
+    "currency": "CAD",
     "lat": 49.8954,
     "lon": -97.1385,
     "crawl": {
       "eventbrite": "canada--winnipeg",
       "allevents": "winnipeg",
-      "ticketmaster": { "city": "Winnipeg", "countryCode": "CA" },
+      "ticketmaster": {"city": "Winnipeg", "countryCode": "CA"},
       "cinemaclock": [
         "scotiabank-theatre-winnipeg", "cineplex-odeon-mcgillivray-vip", "cineplex-junxion-kildonan-place",
         "silvercity-st-vital", "landmark-grant-park", "cinema-city-northgate", "garden-city-cinemas"
@@ -34,12 +35,13 @@
     "region": "AB",
     "country": "CA",
     "timezone": "America/Edmonton",
+    "currency": "CAD",
     "lat": 51.0447,
     "lon": -114.0719,
     "crawl": {
       "eventbrite": "canada--calgary",
       "allevents": "calgary",
-      "ticketmaster": { "city": "Calgary", "countryCode": "CA" },
+      "ticketmaster": {"city": "Calgary", "countryCode": "CA"},
       "cinemaclock": [
         "plaza-theatre", "globe-cinema", "cineplex-vip-university-district-18-only", "scotiabank-theatre-chinook",
         "landmark-5-calgary-market-mall", "cineplex-odeon-westhills", "cineplex-odeon-sunridge-spectrum",
@@ -53,6 +55,323 @@
         "Arts & Theatre": "arts commons|vertigo theatre|loose moose|lunchbox theatre",
         "Exhibitions & Attractions": "glenbow|telus spark|calgary zoo|wilder institute|heritage park|studio bell"
       }
+    }
+  },
+  "edmonton": {
+    "name": "Edmonton",
+    "region": "AB",
+    "country": "CA",
+    "timezone": "America/Edmonton",
+    "currency": "CAD",
+    "lat": 53.5461,
+    "lon": -113.4938,
+    "crawl": {
+      "eventbrite": "canada--edmonton",
+      "allevents": "edmonton",
+      "ticketmaster": {"city": "Edmonton", "countryCode": "CA"},
+      "cinemaclock": [
+        "landmark-cinemas-city-centre", "metro-cinema-garneau-theatre", "cineplex-north-edmonton-vip",
+        "cineplex-manning-town-centre", "landmark-cinemas-tamarack-edmonton", "scotiabank-theatre-edmonton",
+        "cineplex-odeon-south-edmonton", "cineplex-odeon-windermere-vip"
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "halifax": {
+    "name": "Halifax",
+    "region": "NS",
+    "country": "CA",
+    "timezone": "America/Halifax",
+    "currency": "CAD",
+    "lat": 44.6488,
+    "lon": -63.5752,
+    "crawl": {
+      "eventbrite": "canada--halifax",
+      "allevents": "halifax",
+      "ticketmaster": {"city": "Halifax", "countryCode": "CA"},
+      "cinemaclock": ["cineplex-dartmouth-crossing", "scotiabank-theatre-halifax"],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "hamilton": {
+    "name": "Hamilton",
+    "region": "ON",
+    "country": "CA",
+    "timezone": "America/Toronto",
+    "currency": "CAD",
+    "lat": 43.2557,
+    "lon": -79.8711,
+    "crawl": {
+      "eventbrite": "canada--hamilton",
+      "allevents": "hamilton",
+      "ticketmaster": {"city": "Hamilton", "stateCode": "ON", "countryCode": "CA"},
+      "cinemaclock": [
+        "jackson-square", "the-westdale", "cineplex-hamilton-mountain", "cineplex-ancaster",
+        "starlite-drive-in-hamilton"
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "kelowna": {
+    "name": "Kelowna",
+    "region": "BC",
+    "country": "CA",
+    "timezone": "America/Vancouver",
+    "currency": "CAD",
+    "lat": 49.888,
+    "lon": -119.496,
+    "crawl": {
+      "eventbrite": "canada--kelowna",
+      "allevents": "kelowna",
+      "ticketmaster": {"city": "Kelowna", "countryCode": "CA"},
+      "cinemaclock": [
+        "cineplex-orchard-plaza", "landmark-cinemas-xtreme-west-kelowna", "landmark-cinemas-grand-10"
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "kitchener-waterloo": {
+    "name": "Kitchener-Waterloo",
+    "region": "ON",
+    "country": "CA",
+    "timezone": "America/Toronto",
+    "currency": "CAD",
+    "lat": 43.4643,
+    "lon": -80.5204,
+    "crawl": {
+      "eventbrite": "canada--kitchener",
+      "allevents": "kitchener",
+      "ticketmaster": {"city": "Kitchener", "countryCode": "CA"},
+      "cinemaclock": [
+        "apollo-cinema", "landmark-10-waterloo", "princess-twin", "princess-cinema", "cineplex-kitchener-vip",
+        "galaxy-waterloo"
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "london": {
+    "name": "London",
+    "region": "ON",
+    "country": "CA",
+    "timezone": "America/Toronto",
+    "currency": "CAD",
+    "lat": 42.9849,
+    "lon": -81.2453,
+    "crawl": {
+      "eventbrite": "canada--london",
+      "allevents": "london-on",
+      "ticketmaster": {"city": "London", "stateCode": "ON", "countryCode": "CA"},
+      "cinemaclock": [
+        "hyland-cinema", "landmark-8-london", "silvercity-london", "cineplex-odeon-westmount-vip",
+        "mustang-drive-in-london"
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "ottawa": {
+    "name": "Ottawa",
+    "region": "ON",
+    "country": "CA",
+    "timezone": "America/Toronto",
+    "currency": "CAD",
+    "lat": 45.4215,
+    "lon": -75.6972,
+    "crawl": {
+      "eventbrite": "canada--ottawa",
+      "allevents": "ottawa",
+      "ticketmaster": {"city": "Ottawa", "countryCode": "CA"},
+      "cinemaclock": [
+        "cineplex-lansdowne-vip", "mayfair-theatre-ottawa", "bytowne-cinema", "cine-starz-st-laurent-centre",
+        "ottawa-family-cinema", "scotiabank-theatre-ottawa", "cineplex-odeon-south-keys", "cineplex-ottawa",
+        "landmark-10-orleans", "cineplex-odeon-barrhaven", "orleans-cinemas", "landmark-cinemas-kanata"
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "regina": {
+    "name": "Regina",
+    "region": "SK",
+    "country": "CA",
+    "timezone": "America/Regina",
+    "currency": "CAD",
+    "lat": 50.4452,
+    "lon": -104.6189,
+    "crawl": {
+      "eventbrite": "canada--regina",
+      "allevents": "regina",
+      "ticketmaster": {"city": "Regina", "countryCode": "CA"},
+      "cinemaclock": [
+        "kramer-imax", "moonlight-movies-cinemas", "cineplex-normanview", "cineplex-southland",
+        "landmark-cinemas-regina"
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "saskatoon": {
+    "name": "Saskatoon",
+    "region": "SK",
+    "country": "CA",
+    "timezone": "America/Regina",
+    "currency": "CAD",
+    "lat": 52.1332,
+    "lon": -106.67,
+    "crawl": {
+      "eventbrite": "canada--saskatoon",
+      "allevents": "saskatoon",
+      "ticketmaster": {"city": "Saskatoon", "countryCode": "CA"},
+      "cinemaclock": ["broadway", "cineplex-cinemas-at-the-centre", "landmark-cinemas-saskatoon"],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "st-johns": {
+    "name": "St. John's",
+    "region": "NL",
+    "country": "CA",
+    "timezone": "America/St_Johns",
+    "currency": "CAD",
+    "lat": 47.5615,
+    "lon": -52.7126,
+    "crawl": {
+      "eventbrite": "canada--st-johns",
+      "allevents": "st-johns",
+      "ticketmaster": {"city": "St. John's", "countryCode": "CA"},
+      "cinemaclock": ["scotiabank-theatre-st-john-s"],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "toronto": {
+    "name": "Toronto",
+    "region": "ON",
+    "country": "CA",
+    "timezone": "America/Toronto",
+    "currency": "CAD",
+    "lat": 43.6532,
+    "lon": -79.3832,
+    "crawl": {
+      "eventbrite": "canada--toronto",
+      "allevents": "toronto",
+      "ticketmaster": {"city": "Toronto", "countryCode": "CA"},
+      "cinemaclock": [
+        "cineplex-varsity-vip", "innis-town-hall", "hot-docs-ted-rogers-cinema", "cineplex-yorkdale",
+        "carlton-cinema", "cineplex-vip-cinemas-don-mills-19-only", "paradise-theatre-toronto",
+        "cineplex-yonge-dundas-vip", "scotiabank-theatre-toronto", "tiff-bell-lightbox", "market-square",
+        "cineplex-empress-walk", "revue-cinema", "cineplex-odeon-eglinton-town-centre", "silvercity-fairview-mall",
+        "fox-theatre", "kingsway-theatre", "cineplex-queensway-vip", "cineplex-scarborough", "albion-cinemas",
+        "cinestarz-deluxe-woodbine", "cineplex-odeon-morningside"
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "vancouver": {
+    "name": "Vancouver",
+    "region": "BC",
+    "country": "CA",
+    "timezone": "America/Vancouver",
+    "currency": "CAD",
+    "lat": 49.2827,
+    "lon": -123.1207,
+    "crawl": {
+      "eventbrite": "canada--vancouver",
+      "allevents": "vancouver",
+      "ticketmaster": {"city": "Vancouver", "countryCode": "CA"},
+      "cinemaclock": [
+        "fifth-avenue-19-only", "viff-centre", "the-cinematheque", "cineplex-odeon-international-village",
+        "scotiabank-theatre-vancouver", "rio-theatre-vancouver", "hollywood-theatre-vancouver",
+        "cineplex-marine-gateway-vip", "dunbar-theatre"
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "victoria": {
+    "name": "Victoria",
+    "region": "BC",
+    "country": "CA",
+    "timezone": "America/Vancouver",
+    "currency": "CAD",
+    "lat": 48.4284,
+    "lon": -123.3656,
+    "crawl": {
+      "eventbrite": "canada--victoria",
+      "allevents": "victoria",
+      "ticketmaster": {"city": "Victoria", "stateCode": "BC", "countryCode": "CA"},
+      "cinemaclock": [
+        "the-vic-theatre", "imax-victoria", "silvercity-victoria", "cinecenta", "cineplex-odeon-westshore"
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
+    }
+  },
+  "lagos": {
+    "name": "Lagos",
+    "region": "",
+    "country": "NG",
+    "timezone": "Africa/Lagos",
+    "currency": "NGN",
+    "lat": 6.5244,
+    "lon": 3.3792,
+    "crawl": {
+      "eventbrite": "nigeria--lagos",
+      "allevents": "lagos",
+      "allEventsPages": {
+        "AllEvents (incl. Facebook events)": ["https://allevents.in/lagos?page={page}"]
+      },
+      "cinemaclock": [],
+      "silverbird": [
+        {"slug": "galleria", "name": "Silverbird Galleria", "address": "Victoria Island"},
+        {"slug": "ikeja", "name": "Silverbird Ikeja", "address": "Ikeja City Mall"}
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {"Arts & Theatre": "terra kulture|\\bmuson\\b", "Music & Concerts": "afrika shrine"}
+    }
+  },
+  "abuja": {
+    "name": "Abuja",
+    "region": "",
+    "country": "NG",
+    "timezone": "Africa/Lagos",
+    "currency": "NGN",
+    "lat": 9.0765,
+    "lon": 7.3986,
+    "crawl": {
+      "eventbrite": "nigeria--abuja",
+      "allevents": "abuja",
+      "allEventsPages": {
+        "AllEvents (incl. Facebook events)": ["https://allevents.in/abuja?page={page}"]
+      },
+      "cinemaclock": [],
+      "silverbird": [
+        {"slug": "jabi", "name": "Silverbird Jabi", "address": "Jabi Lake Mall"},
+        {"slug": "sec-abuja", "name": "Silverbird Entertainment Centre", "address": ""}
+      ],
+      "sources": {},
+      "sourceVenues": {},
+      "venueRules": {}
     }
   }
 }

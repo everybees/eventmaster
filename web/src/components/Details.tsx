@@ -3,7 +3,8 @@ import type { Action, ApiEvent, SwipeState, Tickets } from "../../../shared/type
 import { styleFor } from "../categories.ts";
 import { cityName } from "../city.ts";
 import {
-  dateParts, downloadIcs, nextShowtimes, priceNote, priceText, shareEvent, shortSource, tagText, time12, timeLine,
+  dateParts, downloadIcs, mapsUrl, nextShowtimes, priceNote, priceText, shareEvent, shortSource, tagText, time12, timeLine,
+  venueMapUrl,
 } from "../format.ts";
 import type { Decision } from "./CardStack.tsx";
 import { EventMedia } from "./EventMedia.tsx";
@@ -18,15 +19,30 @@ interface Props {
   onTrack(action: Action): void;
 }
 
-function Row({ icon, title, sub }: { icon: ReactNode; title: string; sub?: string }) {
-  return (
-    <div className="row">
+interface RowProps {
+  icon: ReactNode;
+  title: string;
+  sub?: string;
+  map?: { href: string; onOpen(): void }; // the whole row opens Google Maps
+}
+
+function Row({ icon, title, sub, map }: RowProps) {
+  const body = (
+    <>
       <span className="row-icon">{icon}</span>
       <div>
         <strong>{title}</strong>
         {sub && <span>{sub}</span>}
       </div>
-    </div>
+    </>
+  );
+  if (!map) return <div className="row">{body}</div>;
+  return (
+    <a className="row row-link" href={map.href} target="_blank" rel="noopener noreferrer"
+      aria-label={`${title}${sub ? `, ${sub}` : ""}: open in Google Maps`} onClick={map.onOpen}>
+      {body}
+      <span className="row-go" aria-hidden="true">Map <IconExternal size={14} /></span>
+    </a>
   );
 }
 
@@ -48,6 +64,7 @@ export function Details({ event, state, onClose, onDecide, onUnsave, onTrack }: 
   const shows = nextShowtimes(event);
   const source = shortSource(event.source);
   const buy = buyLink(event, source);
+  const venueMap = venueMapUrl(event);
   // a native modal: Escape closes it, focus stays inside, and the feed behind is inert
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -74,7 +91,8 @@ export function Details({ event, state, onClose, onDecide, onUnsave, onTrack }: 
         </div>
         <div className="rows">
           <Row icon={<IconCalendar size={18} />} title={dateParts(event.startLocal).long} sub={timeLine(event)} />
-          <Row icon={<IconPin size={18} />} title={event.venue.name || cityName(event.city)} sub={event.venue.address} />
+          <Row icon={<IconPin size={18} />} title={event.venue.name || cityName(event.city)} sub={event.venue.address}
+            map={venueMap ? { href: venueMap, onOpen: () => onTrack("map") } : undefined} />
           <Row icon={<IconTicket size={18} />} title={priceText(event)} sub={priceNote(event)} />
           {buy && (
             <div className="buy">
@@ -92,7 +110,11 @@ export function Details({ event, state, onClose, onDecide, onUnsave, onTrack }: 
               {shows.some((s) => s.tickets?.some(Boolean)) && <p className="fine left">Tap a time to buy tickets.</p>}
               {shows.map((s) => (
                 <div className="show" key={s.cinema}>
-                  <strong>{s.cinema}</strong>
+                  <a className="show-cinema" href={mapsUrl([s.cinema, s.address].filter(Boolean).join(", "), cityName(event.city))}
+                    target="_blank" rel="noopener noreferrer" aria-label={`${s.cinema}: open in Google Maps`}
+                    onClick={() => onTrack("map")}>
+                    <IconPin size={15} /> <strong>{s.cinema}</strong>
+                  </a>
                   <span>{dateParts(s.date).long}</span>
                   <div className="show-times">
                     {s.times.map((t, i) => {

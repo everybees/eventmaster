@@ -15,13 +15,29 @@ const SELLERS: { name: string; site: RegExp }[] = [
   { name: "Fever", site: countrySites("feverup") },
   { name: "Tixr", site: countrySites("tixr") },
   { name: "Zeffy", site: countrySites("zeffy") },
+  { name: "Tix Africa", site: /(^|\.)tix\.africa$/ },
+  { name: "Nairabox", site: countrySites("nairabox") },
 ];
 
 /** Link shorteners hide where they go; "Get tickets on tinyurl.com" would say nothing useful. */
 const SHORTENERS = /(^|\.)(tinyurl\.com|bit\.ly|t\.co|ow\.ly|rebrand\.ly|linktr\.ee|lnkd\.in|shorturl\.at|tiny\.cc|forms\.gle)$/;
 
-/** How to name a seller we don't know: its domain, or "the organizer's site" behind a link shortener. */
-const unknownSeller = (host: string) => (SHORTENERS.test(host) ? "the organizer’s site" : host.replace(/^www\./, ""));
+/** Sites listings name as "where to get tickets" that aren't ticket sellers, by their usual names. */
+const KNOWN_SITES: [RegExp, string][] = [
+  [/(^|\.)(wa\.me|whatsapp\.com)$/, "WhatsApp"], // common in Nigeria: tickets bought by messaging the organizer
+  [/(^|\.)(facebook\.com|fb\.me)$/, "Facebook"],
+  [/(^|\.)(lu\.ma|luma\.com)$/, "Luma"],
+  [/(^|\.)instagram\.com$/, "Instagram"],
+  [/(^|\.)10times\.com$/, "10times"],
+];
+
+/** How to name a seller we don't know: a known site's name, "the organizer's site" behind a link shortener,
+ *  else its domain. */
+function unknownSeller(host: string): string {
+  const known = KNOWN_SITES.find(([site]) => site.test(host));
+  if (known) return known[1];
+  return SHORTENERS.test(host) ? "the organizer’s site" : host.replace(/^www\./, "");
+}
 
 const onDomain = (host: string, domain: string) => host === domain || host.endsWith(`.${domain}`);
 

@@ -13,7 +13,7 @@ half as many events as the city's last one, so the scheduled job fails and GitHu
 
 Needs pymongo (pip install -r crawler/requirements.txt), except for --dry-run.
 """
-import argparse, collections, json, os, sys, time
+import argparse, collections, json, os, re, sys, time
 from datetime import datetime, timedelta, timezone
 
 import events as E
@@ -23,6 +23,8 @@ REMOVE_AFTER_MISSED_RUNS = 2
 HEALTHY_SHARE = 0.5               # a run with under half the last run's events removes nothing
 FEED_GRACE = timedelta(hours=6)   # as in events.wanted(): an event stays listed this long after it ends
 TICKET_RECHECK = timedelta(hours=24)  # how often an AllEvents page is fetched again for its ticket link
+SYNOPSIS_RECHECK = timedelta(days=7)  # how often a film's page is fetched again for its synopsis
+FAILED_SOURCE_RE = re.compile(r"^\s*! (.+?)(?::| ->) ")  # "  ! AllEvents (…): https://… -> HTTP Error 405"
 
 
 def to_doc(e):
@@ -57,7 +59,8 @@ def to_doc(e):
         "allDay": all_day,
         "times": times,
         "venue": {"name": e["venue"], "address": e["address"]},
-        "price": {"text": e.get("price") or "", "free": True if free else (False if cost == "Paid" else None)},
+        "price": {"text": e.get("price") or "", "free": True if free else (False if cost == "Paid" else None),
+                  "currency": e.get("currency") or None},
         "cost": "Free" if free else cost,
         "image": e.get("image") or None,
         "description": E.clean(e.get("description"), limit=1200),
@@ -69,6 +72,8 @@ def to_doc(e):
     }
     if "_ticket_checked" in e:  # only when looked up, so a run that skips the lookup keeps the last answer
         doc["ticketUrl"], doc["ticketCheckedAt"] = e["_ticket_url"] or None, e["_ticket_checked"]
+    if e.get("_synopsis_checked"):  # films: the synopsis on its own, so other cities and later runs can reuse it
+        doc["synopsis"], doc["synopsisCheckedAt"] = e["_synopsis"], e["_synopsis_checked"]
     return doc
 
 
@@ -80,6 +85,13 @@ def build_docs(selected):
             d = to_doc(e)
             docs.setdefault(d["_id"], d)
     return list(docs.values())
+
+
+def known_synopses(db, now):
+    """Film synopses fetched in the last week, in any city: {film page URL: (synopsis, when fetched)}."""
+    docs = db.events.find({"synopsisCheckedAt": {"$gte": now - SYNOPSIS_RECHECK}},
+                          {"url": 1, "synopsis": 1, "synopsisCheckedAt": 1})
+    return {d["url"]: (d.get("synopsis") or "", d["synopsisCheckedAt"]) for d in docs}
 
 
 def known_ticket_links(db, selected):
@@ -134,6 +146,9 @@ def load(db, docs, source_counts, report, run_start, city=E.DEFAULT_CITY):
 
     before = {s["source"]: s["count"] for s in (prev or {}).get("sources", [])}
     dropped = sorted(s for s, n in before.items() if n > 0 and source_counts.get(s, 0) == 0)
+    # a source that errored and found nothing is broken (blocked, moved, redesigned), even if it never worked
+    errored = {m.group(1) for r in report if (m := FAILED_SOURCE_RE.match(r))}
+    failed = sorted(s for s in errored if source_counts.get(s, 0) == 0)
     run = {
         "city": city,
         "startedAt": run_start,
@@ -145,8 +160,9 @@ def load(db, docs, source_counts, report, run_start, city=E.DEFAULT_CITY):
         "modified": res.modified_count if res else 0,
         "removed": removed,
         "droppedSources": dropped,
+        "failedSources": failed,
         "errors": [r.strip().lstrip("! ") for r in report if r.strip().startswith("!")],
-        "status": "partial" if not healthy else ("alert" if dropped else "ok"),
+        "status": "partial" if not healthy else ("alert" if dropped or failed else "ok"),
     }
     db.runs.insert_one(run)
     return run
@@ -172,10 +188,6 @@ def main():
     run_start = datetime.now(timezone.utc)
     now = datetime.now(E.LOCAL_TZ)
     end = now + timedelta(days=a.days)
-    print(f"Crawling {E.CITY_NAME}")
-    raw, report = E.crawl(a, now, end)
-    source_counts = collections.Counter(e["source"] for e in raw)
-    selected = E.select_events(raw, a, now, end)
 
     client = None
     if not args.dry_run:
@@ -183,6 +195,13 @@ def main():
         client = MongoClient(uri, tz_aware=True, appname="wpg-events-crawler")
     try:
         db = client[os.environ.get("MONGODB_DB") or DEFAULT_DB] if client else None
+        if db is not None:
+            E.SYNOPSES.update(known_synopses(db, run_start))
+        print(f"Crawling {E.CITY_NAME}")
+        raw, report = E.crawl(a, now, end)
+        report.append(f"  Film synopses: {E.SYNOPSIS_STATS['fetched']} fetched, {E.SYNOPSIS_STATS['reused']} reused")
+        source_counts = collections.Counter(e["source"] for e in raw)
+        selected = E.select_events(raw, a, now, end)
         if not args.skip_ticket_links:
             known = known_ticket_links(db, selected) if db is not None else {}
             fetched = add_ticket_links(selected, known, run_start, a.delay)
@@ -204,8 +223,11 @@ def main():
         print(f"! Only {run['total']} events, under half of the last run; nothing was marked removed.", file=sys.stderr)
         return 3
     if run["status"] == "alert":
-        print("! These sources returned events last run and none this run: " + ", ".join(run["droppedSources"]),
-              file=sys.stderr)
+        if run["droppedSources"]:
+            print("! These sources returned events last run and none this run: " + ", ".join(run["droppedSources"]),
+                  file=sys.stderr)
+        if run["failedSources"]:
+            print("! These sources failed and found nothing: " + ", ".join(run["failedSources"]), file=sys.stderr)
         return 2
     return 0
 

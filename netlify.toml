@@ -34,6 +34,7 @@
     "https://www\\.cinemaclock\\.com/.*",
     "https://winnipegfilmgroup\\.com/.*",
     "https://s1\\.ticketm\\.net/.*",
+    "https://silverbirdcinemas\\.com/.*",
   ]
 
 [[headers]]

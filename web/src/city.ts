@@ -29,6 +29,19 @@ export function cityName(slug: string | undefined): string {
   return known?.cities.find((c) => c.slug === s)?.name ?? (s ? s[0].toUpperCase() + s.slice(1) : "");
 }
 
+/** The currency of a city's prices, for listings that don't name theirs. */
+export const cityCurrency = (slug: string | undefined): string | null =>
+  known?.cities.find((c) => c.slug === (slug ?? known?.defaultCity))?.currency ?? null;
+
+/** "Canada" for "CA". */
+export function countryName(code: string): string {
+  try {
+    return new Intl.DisplayNames(["en"], { type: "region" }).of(code) ?? code;
+  } catch {
+    return code;
+  }
+}
+
 /** Great-circle distance in km. */
 export function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const rad = Math.PI / 180;

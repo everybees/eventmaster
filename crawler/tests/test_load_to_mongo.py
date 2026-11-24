@@ -93,6 +93,131 @@ class ToDoc(unittest.TestCase):
             E.use_city(E.DEFAULT_CITY)
 
 
+class Sources(unittest.TestCase):
+    def tearDown(self):
+        os.environ.pop("CRAWL_EVENTBRITE", None)
+        E.use_city(E.DEFAULT_CITY)
+
+    def test_eventbrite_only_when_asked_for(self):
+        E.use_city("calgary")
+        self.assertFalse(any(s.startswith("Eventbrite") for s in E.JSONLD_SOURCES))
+        os.environ["CRAWL_EVENTBRITE"] = "1"
+        E.use_city("calgary")
+        self.assertIn("https://www.eventbrite.ca/d/canada--calgary/all-events/?page={page}", E.JSONLD_SOURCES["Eventbrite"])
+
+    def test_every_city_is_complete(self):
+        for slug, c in E.CITIES.items():
+            E.use_city(slug)  # checks its venue rules' categories
+            self.assertTrue(c["crawl"]["allevents"] and c["currency"] and c["timezone"], slug)
+            self.assertRegex(slug, r"^[a-z][a-z-]*$")
+            self.assertTrue(any(s.startswith("AllEvents") for s in E.JSONLD_SOURCES), slug)
+
+    def test_a_city_can_have_its_own_pages_and_no_ticketmaster_or_cinemas(self):
+        E.use_city("lagos")
+        self.assertEqual(E.JSONLD_SOURCES, {"AllEvents (incl. Facebook events)": ["https://allevents.in/lagos?page={page}"]})
+        self.assertEqual((E.TICKETMASTER_PLACE, E.CINEMACLOCK_THEATRES), ({}, []))
+        self.assertEqual(str(E.LOCAL_TZ), "Africa/Lagos")
+        os.environ["CRAWL_EVENTBRITE"] = "1"
+        E.use_city("lagos")  # Eventbrite's .com site outside Canada
+        self.assertEqual(E.JSONLD_SOURCES["Eventbrite"], ["https://www.eventbrite.com/d/nigeria--lagos/all-events/?page={page}"])
+
+    def test_prices_keep_their_currency(self):
+        ev = {"@type": "Event", "name": "Afrobeats Night", "startDate": "2026-12-20",
+              "offers": {"@type": "AggregateOffer", "lowPrice": "25", "priceCurrency": "USD"}}
+        e = E.norm_ld(ev, "AllEvents")
+        self.assertEqual((e["price"], e["currency"]), ("25", "USD"))
+        (sel,) = select(dict(raw("Afrobeats Night", "2026-12-20"), price="25", currency="USD"))
+        self.assertEqual(L.to_doc(sel)["price"], {"text": "25", "free": False, "currency": "USD"})
+        self.assertEqual(E.norm_ld(dict(ev, offers={"price": "5000", "priceCurrency": "naira"}), "x")["currency"], "")
+
+
+class Synopses(unittest.TestCase):
+    def setUp(self):
+        self.real, self.fetched = E.page_synopsis, []
+        E.page_synopsis = lambda url: self.fetched.append(url) or f"About {url}"
+        E.SYNOPSES.clear()
+
+    def tearDown(self):
+        E.page_synopsis = self.real
+        E.SYNOPSES.clear()
+
+    def test_known_ones_are_reused_and_new_ones_remembered(self):
+        wicked, new = "https://www.cinemaclock.com/movies/wicked", "https://silverbirdcinemas.com/movie/new-film/"
+        week_old = datetime(2026, 11, 20, tzinfo=timezone.utc)
+        E.SYNOPSES[wicked] = ("Two witches.", week_old)
+        self.assertEqual(E.film_synopsis(wicked, 0), ("Two witches.", week_old))
+        text, when = E.film_synopsis(new, 0)
+        self.assertEqual((text, self.fetched), (f"About {new}", [new]))
+        self.assertEqual(E.film_synopsis(new, 0), (text, when))  # not fetched again
+        self.assertEqual(self.fetched, [new])
+
+    def test_a_failed_page_is_not_remembered(self):
+        E.page_synopsis = lambda url: None
+        self.assertEqual(E.film_synopsis("https://www.cinemaclock.com/movies/x", 0), ("", None))
+        self.assertNotIn("https://www.cinemaclock.com/movies/x", E.SYNOPSES)
+
+    def test_stored_with_the_film(self):
+        when = datetime(2026, 11, 24, tzinfo=timezone.utc)
+        (e,) = select(raw("Wicked", "2026-11-24", source="CinemaClock (cinema showtimes)",
+                          url="https://www.cinemaclock.com/movies/wicked", _synopsis="Two witches.", _synopsis_checked=when))
+        self.assertEqual((L.to_doc(e)["synopsis"], L.to_doc(e)["synopsisCheckedAt"]), ("Two witches.", when))
+        (other,) = select(raw("A talk", "2026-11-24"))
+        self.assertNotIn("synopsis", L.to_doc(other))
+
+
+class Silverbird(unittest.TestCase):
+    PAGE = (
+        '<article class="entry-item"><div class="entry-thumb"><img width="164" height="220" '
+        'src="https://silverbirdcinemas.com/wp-content/uploads/2023/10/hungepost-164x220.jpg" /></div>'
+        '<div class="entry-content"><h4 class="entry-title"><a href="https://silverbirdcinemas.com/movie/hunger/">'
+        'The Hunger Games</a></h4><div class="entry-date"><i class="fa fa-clock-o"></i>02 hours 38 minutes</div>'
+        '<p class="cinema_page_showtime"><b>Showtime:</b> <span><strong>FRI/SAT: </strong></span>'
+        '<strong>To be updated 27th November</strong><br><span><strong>WED: </strong></span>'
+        '<strong>10:15am(VVIP), 2:00pm</strong><br><span><strong>THUR: </strong></span><strong>'
+        '<button><a href= "https://book.example/b1" target="_blank">6:00pm</a></button></strong></p>'
+        '<div class="desc-mv"><div><span>Release:</span>Nov 20, 2026</div><div class="note"><span>Genre:</span>'
+        '<a href="https://silverbirdcinemas.com/genre/actiion/">Action</a>, '
+        '<a href="https://silverbirdcinemas.com/genre/now-showing/">Now Showing</a></div>'
+        '<div><span>Language:</span>English </div></div></div></article>'
+        '<article class="entry-item"><div class="entry-content"><h4 class="entry-title">'
+        '<a href="https://silverbirdcinemas.com/movie/baba-segi/">Baba Segi&#8217;s Wives (Release Dec 4th)</a></h4>'
+        '<p class="cinema_page_showtime"><b>Showtime:</b> <span><strong>FRI: </strong></span><strong>'
+        '<button><a href= "https://book.example/b2" target="_blank">8:30pm</a></button></strong></p>'
+        '<div class="desc-mv"><div><span>Release:</span>Dec 04, 2026</div><div class="note"><span>Genre:</span>'
+        '<a href="https://silverbirdcinemas.com/genre/nollywood/">Nollywood</a></div></div></div></article>'
+    )
+
+    def setUp(self):
+        self.real = E.fetch
+        E.fetch = lambda url: self.PAGE
+
+    def tearDown(self):
+        E.fetch = self.real
+
+    def test_the_week_s_showings_with_their_booking_links(self):
+        tuesday = datetime(2026, 11, 24).date()  # the cinema week is Fri Nov 20 to Thu Nov 26
+        hunger, segi = E.sb_cinema("galleria", tuesday)
+        self.assertEqual((hunger["title"], hunger["info"]), ("The Hunger Games", "2h 38m · Action · English"))
+        self.assertEqual(hunger["shows"], {
+            datetime(2026, 11, 25).date(): {(10, 15): "", (14, 0): ""},  # plain times: no booking link
+            datetime(2026, 11, 26).date(): {(18, 0): "https://book.example/b1"},
+        })
+        self.assertEqual(hunger["formats"], {"VVIP"})
+        self.assertEqual(hunger["poster"], "https://silverbirdcinemas.com/wp-content/uploads/2023/10/hungepost.jpg")
+        # not out yet: its weekdays are those of its opening week
+        self.assertEqual((segi["title"], segi["shows"]),
+                         ("Baba Segi’s Wives", {datetime(2026, 12, 4).date(): {(20, 30): "https://book.example/b2"}}))
+
+    def test_films_are_keyed_by_their_page(self):
+        f = {"title": "Baba Segi’s Wives", "cinemas": {"Silverbird Galleria": ("Victoria Island", {
+            datetime(2026, 12, 4).date(): {(20, 30): "https://book.example/b2"}})},
+             "info": "", "rating": "", "formats": set(), "cast": "", "poster": "", "family": False}
+        row = E.film_row("https://silverbirdcinemas.com/movie/baba-segi/", "Silverbird Cinemas", f, "A comedy.")
+        later = dict(row, start="2026-12-05")
+        self.assertEqual(E.stable_id(row), E.stable_id(later))
+        self.assertEqual(row["_showtimes"][0]["tickets"], ["https://book.example/b2"])
+
+
 class Tickets(unittest.TestCase):
     def test_cinemaclock_showings_keep_their_ticket_links(self):
         block = ('<div data-earliest-date="20261123" class="x"><p class="times"><u>Today <span class="timesdate">Nov 23'
@@ -143,14 +268,14 @@ class Load(unittest.TestCase):
         cls.client.drop_database(cls.db.name)
         cls.client.close()
 
-    def run_with(self, *titles, sources=None, at=None, city=E.DEFAULT_CITY):
+    def run_with(self, *titles, sources=None, at=None, city=E.DEFAULT_CITY, report=()):
         E.use_city(city)
         try:
             docs = L.build_docs(select(*[raw(t, "2026-11-25T20:00:00-05:00") for t in titles]))
         finally:
             E.use_city(E.DEFAULT_CITY)
         counts = sources if sources is not None else {"Test": len(docs)}
-        return L.load(self.db, docs, counts, [], at, city)
+        return L.load(self.db, docs, counts, list(report), at, city)
 
     def test_upserts_removals_and_alerts(self):
         t0 = datetime(2026, 11, 23, 12, tzinfo=timezone.utc)
@@ -184,6 +309,12 @@ class Load(unittest.TestCase):
         a = self.db.events.find_one({"title": "A"})
         self.assertEqual((a["city"], a["status"], a["missedRuns"]), ("winnipeg", "active", 0))
         self.assertEqual(self.db.events.find_one({"title": "Calgary 1"})["city"], "calgary")
+
+        # a source that errors and finds nothing is an alert, even if it never worked; one bad page isn't
+        blocked = ["  ! Blocked: https://blocked.example/?page=1 -> HTTP Error 405: Not Allowed", "  Blocked: 0 found",
+                   "  ! Test: https://example.com/?page=2 -> timed out"]
+        run = self.run_with("Calgary 1", at=t0 + timedelta(hours=48), city="calgary", report=blocked)
+        self.assertEqual((run["status"], run["failedSources"], run["droppedSources"]), ("alert", ["Blocked"], []))
 
 
 if __name__ == "__main__":
