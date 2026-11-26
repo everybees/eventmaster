@@ -42,6 +42,18 @@ export async function requestCity(placeId: number): Promise<CityRequestResponse>
   return (await res.json()) as CityRequestResponse;
 }
 
+/** "Download my data": everything the server holds for this device, saved as a JSON file. */
+export async function downloadMyData(): Promise<void> {
+  const res = await fetch("/api/me/export", { headers: { "x-device-id": deviceId() } });
+  if (!res.ok) throw new Error(`Your data couldn't be downloaded (error ${res.status}).`);
+  const url = URL.createObjectURL(await res.blob());
+  const a = Object.assign(document.createElement("a"), { href: url, download: `my-event-data-${new Date().toISOString().slice(0, 10)}.json` });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 export async function deleteMyData(): Promise<void> {
   const res = await fetch("/api/me", { method: "DELETE", headers: { "x-device-id": deviceId() } });
   if (!res.ok) throw new Error(`Your data couldn't be deleted (error ${res.status}).`);

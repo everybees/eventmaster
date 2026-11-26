@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Action, ApiEvent, City, SwipeState, Via } from "../../shared/types.ts";
-import { deleteMyData, fetchCities, fetchEvents } from "./api.ts";
+import { deleteMyData, downloadMyData, fetchCities, fetchEvents } from "./api.ts";
 import { CATEGORY_ORDER, styleFor } from "./categories.ts";
 import {
   cachedCities, cityName, forgetRequest, rememberCities, rememberRequest, requestedCities, saveCity, savedCity,
@@ -11,11 +11,12 @@ import { Details } from "./components/Details.tsx";
 import {
   IconBookmark, IconChevronDown, IconClock, IconCompass, IconInfo, IconRefresh, IconUndo, IconX,
 } from "./components/icons.tsx";
+import { ConsentBanner, PrivacyNotice } from "./components/Privacy.tsx";
 import { Saved } from "./components/Saved.tsx";
 import { resetDeviceId } from "./device.ts";
 import { ALL, countByCategory, inCategory, remaining } from "./feed.ts";
 import { useSwipeStore } from "./store.ts";
-import { clearQueue, isOptedOut, setOptedOut, track } from "./track.ts";
+import { clearQueue, consent, setConsent, track, type Consent } from "./track.ts";
 
 const STATE_FOR: Record<Decision, SwipeState> = { save: "saved", pass: "passed", later: "later" };
 const VERB: Record<Decision, string> = { save: "Saved", pass: "Passed on", later: "Moved to the back:" };
@@ -34,7 +35,8 @@ export function App() {
   const [tab, setTab] = useState<"discover" | "saved">("discover");
   const [open, setOpen] = useState<ApiEvent | null>(null);
   const [toast, setToast] = useState("");
-  const [trackingOff, setTrackingOff] = useState(isOptedOut);
+  const [sharing, setSharing] = useState<Consent>(consent);
+  const [privacyOpen, setPrivacyOpen] = useState(() => location.pathname.replace(/\/$/, "") === "/privacy");
   const stack = useRef<StackHandle>(null);
   const toastTimer = useRef(0);
   const lastViewed = useRef("");
@@ -128,6 +130,25 @@ export function App() {
     say(`Removed ${event.title} from saved`);
   }
 
+  function answerConsent(yes: boolean) {
+    setConsent(yes);
+    setSharing(consent());
+  }
+
+  function closePrivacy() {
+    setPrivacyOpen(false);
+    if (location.pathname !== "/") history.replaceState(null, "", "/"); // opened at /privacy
+  }
+
+  async function downloadData() {
+    try {
+      await downloadMyData();
+      say("Your data was downloaded");
+    } catch (err) {
+      say((err as Error).message);
+    }
+  }
+
   async function deleteData() {
     if (!window.confirm("Delete your saved events and everything this app has sent about this device?")) return;
     try {
@@ -144,7 +165,7 @@ export function App() {
   // arrow keys on a keyboard do what the swipes do
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (tab !== "discover" || open || picking || e.target instanceof HTMLInputElement) return;
+      if (tab !== "discover" || open || picking || privacyOpen || e.target instanceof HTMLInputElement) return;
       const decision = KEYS[e.key];
       if (decision) stack.current?.fling(decision);
       else if (e.key === "ArrowUp" && top) openDetails(top, "button");
@@ -204,6 +225,7 @@ export function App() {
             </div>
             <button type="button" className="icon-btn" aria-label="Reload events" onClick={load} disabled={!city}><IconRefresh /></button>
           </header>
+          {city && sharing === null && <ConsentBanner onAnswer={answerConsent} onReadMore={() => setPrivacyOpen(true)} />}
           {ready && (
             <div className="ready-banner" role="status">
               <span>Events for {ready.name} are ready.</span>
@@ -237,10 +259,12 @@ export function App() {
       ) : (
         <Saved
           events={savedEvents}
-          trackingOff={trackingOff}
+          sharing={sharing === "yes"}
           onOpen={(e) => openDetails(e, "list")}
           onRemove={unsave}
-          onTrackingChange={(off) => { setOptedOut(off); setTrackingOff(off); }}
+          onSharingChange={answerConsent}
+          onPrivacy={() => setPrivacyOpen(true)}
+          onDownloadData={downloadData}
           onDeleteData={deleteData}
         />
       )}
@@ -254,7 +278,7 @@ export function App() {
         </button>
       </nav>
 
-      {picking && (
+      {picking && !privacyOpen && (
         <CityPicker
           cities={cities}
           current={city}
@@ -275,6 +299,8 @@ export function App() {
           onTrack={(action: Action) => track(action, open.id, { via: "button" })}
         />
       )}
+
+      {privacyOpen && <PrivacyNotice onClose={closePrivacy} />}
     </main>
   );
 }

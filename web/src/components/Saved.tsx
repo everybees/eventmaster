@@ -6,14 +6,16 @@ import { IconX } from "./icons.tsx";
 
 interface Props {
   events: ApiEvent[];
-  trackingOff: boolean;
+  sharing: boolean;
   onOpen(event: ApiEvent): void;
   onRemove(event: ApiEvent): void;
-  onTrackingChange(off: boolean): void;
+  onSharingChange(on: boolean): void;
+  onPrivacy(): void;
+  onDownloadData(): void;
   onDeleteData(): void;
 }
 
-export function Saved({ events, trackingOff, onOpen, onRemove, onTrackingChange, onDeleteData }: Props) {
+export function Saved({ events, sharing, onOpen, onRemove, onSharingChange, onPrivacy, onDownloadData, onDeleteData }: Props) {
   const sorted = [...events].sort((a, b) => a.startLocal.localeCompare(b.startLocal));
   // saved in more than one city (say, on a trip): a heading per city
   const byCity = new Map<string, ApiEvent[]>();
@@ -60,15 +62,21 @@ export function Saved({ events, trackingOff, onOpen, onRemove, onTrackingChange,
       ))}
       <section className="privacy" aria-label="Privacy">
         <p>
-          Your saved list stays on this phone. To improve the feed, the app also sends what you swipe, with a random
-          ID for this device. No name or email. “Use my location” rounds your position to about 10 km and uses
-          it only to find your city; a city you ask us to add is logged with this device’s ID.
+          Your saved list is kept on this phone.{" "}
+          {sharing
+            ? "You’re sharing your activity (what you see, save and tap) with a random ID for this device, to improve the feed."
+            : "Activity sharing is off: nothing about what you see or save is sent."}{" "}
+          A city you ask us to add is logged with this device’s ID. We keep it all until you delete it.
         </p>
         <label className="toggle">
-          <input type="checkbox" checked={!trackingOff} onChange={(e) => onTrackingChange(!e.target.checked)} />
-          <span>Share anonymous activity</span>
+          <input type="checkbox" checked={sharing} onChange={(e) => onSharingChange(e.target.checked)} />
+          <span>Share my activity</span>
         </label>
-        <button type="button" className="text-btn" onClick={onDeleteData}>Delete my data</button>
+        <div className="privacy-links">
+          <button type="button" className="text-btn plain" onClick={onPrivacy}>Privacy notice</button>
+          <button type="button" className="text-btn plain" onClick={onDownloadData}>Download my data</button>
+          <button type="button" className="text-btn" onClick={onDeleteData}>Delete my data</button>
+        </div>
       </section>
     </div>
   );

@@ -37,6 +37,12 @@
     "https://silverbirdcinemas\\.com/.*",
   ]
 
+# the privacy notice has its own address (the app opens it); a file of that name would win over this
+[[redirects]]
+  from = "/privacy"
+  to = "/index.html"
+  status = 200
+
 [[headers]]
   for = "/sw.js"
   [headers.values]

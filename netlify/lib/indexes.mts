@@ -1,8 +1,9 @@
-import type { Db } from "mongodb";
+import { MongoServerError, type Db } from "mongodb";
 
-const DAY = 24 * 3600;
-
-/** Creates every index the app relies on. Safe to run again; existing indexes are left alone. */
+/**
+ * Creates every index the app relies on. Safe to run again; existing indexes are left alone.
+ * People's data (interactions, saved states, city requests) has no expiry: it's kept until they delete it.
+ */
 export async function setupIndexes(db: Db): Promise<void> {
   await db.collection("events").createIndexes([
     // every feed query is for one city (from before cities: "feed", "by_category", "by_tag"; safe to drop)
@@ -15,7 +16,6 @@ export async function setupIndexes(db: Db): Promise<void> {
     { key: { deviceId: 1, at: -1 }, name: "by_device" },
     { key: { userId: 1, at: -1 }, name: "by_user", partialFilterExpression: { userId: { $type: "string" } } },
     { key: { eventId: 1, action: 1 }, name: "by_event" },
-    { key: { receivedAt: 1 }, name: "expire", expireAfterSeconds: 540 * DAY }, // ~18 months
   ]);
   await db.collection("userEventState").createIndexes([{ key: { "_id.u": 1, state: 1 }, name: "by_user" }]);
   // the city search and "Use my location" (crawler/load_places.py fills `places`)
@@ -29,7 +29,18 @@ export async function setupIndexes(db: Db): Promise<void> {
   ]);
   await db.collection("cityRequestLog").createIndexes([
     { key: { deviceId: 1, at: -1 }, name: "by_device" },
-    { key: { at: 1 }, name: "expire", expireAfterSeconds: 90 * DAY },
   ]);
   await db.collection("runs").createIndexes([{ key: { startedAt: -1 }, name: "recent" }]);
+  // these deleted interactions after ~18 months and the city request log after 90 days, before data was kept
+  await dropIndex(db, "interactions", "expire");
+  await dropIndex(db, "cityRequestLog", "expire");
+}
+
+async function dropIndex(db: Db, collection: string, name: string): Promise<void> {
+  try {
+    await db.collection(collection).dropIndex(name);
+  } catch (err) {
+    // 27: no such index (already dropped); 26: no such collection
+    if (!(err instanceof MongoServerError && (err.code === 27 || err.code === 26))) throw err;
+  }
 }

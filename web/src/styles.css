@@ -20,7 +20,7 @@
   --line-thick: 2.5px solid var(--ink);
   --shadow: 3px 3px 0 var(--ink);
   --shadow-lg: 6px 6px 0 var(--ink);
-  --display: "Bricolage Grotesque", Inter, system-ui, sans-serif;
+  --display: "Bricolage Grotesque Variable", "Inter Variable", system-ui, sans-serif;
   color-scheme: light;
 }
 
@@ -29,7 +29,7 @@ html, body, #root { height: 100%; margin: 0; }
 body {
   background: var(--ink); /* frames the app column on wide screens */
   color: var(--ink);
-  font-family: Inter, system-ui, sans-serif;
+  font-family: "Inter Variable", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
 }
@@ -477,6 +477,21 @@ h1, h2, h3, p { margin: 0; }
 .toggle { display: flex; align-items: center; gap: 10px; min-height: 44px; color: var(--ink); font-size: 14px; font-weight: 700; }
 .toggle input { width: 20px; height: 20px; accent-color: var(--save); }
 .text-btn { align-self: flex-start; min-height: 44px; padding: 0; border: 0; background: none; color: var(--danger); font-size: 14px; font-weight: 700; text-decoration: underline; cursor: pointer; }
+.text-btn.plain { color: var(--ink); }
+.privacy-links { display: flex; flex-wrap: wrap; column-gap: 20px; }
+
+/* ---------- privacy: the first-run question and the notice ---------- */
+.consent { flex: none; display: flex; flex-direction: column; gap: 8px; margin: 8px 16px 0 20px; padding: 14px; border: var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); font-size: 14px; line-height: 1.45; }
+.consent h2 { font-family: var(--display); font-size: 18px; font-weight: 800; letter-spacing: -0.01em; }
+.consent p { color: var(--text-2); }
+.consent-actions { display: flex; gap: 10px; }
+.consent-actions .bar-btn { flex: 1; height: 42px; }
+.inline-link { padding: 0; border: 0; background: none; font-weight: 700; text-decoration: underline; cursor: pointer; }
+.notice .sheet-body { gap: 12px; font-size: 14px; line-height: 1.5; color: var(--text-2); }
+.notice section { display: flex; flex-direction: column; gap: 8px; }
+.notice h3 { font-family: var(--display); font-size: 17px; font-weight: 800; color: var(--ink); }
+.notice ul { display: flex; flex-direction: column; gap: 6px; margin: 0; padding-left: 20px; }
+.notice a { color: var(--ink); font-weight: 600; }
 
 /* ---------- short screens ----------
    Laptop windows and phones with browser bars showing are often under 800 px tall. The card gives up

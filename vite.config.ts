@@ -89,6 +89,9 @@ function netlifyFunctionsDev(): Plugin {
 export default defineConfig(({ mode }) => {
   // the functions read MONGODB_URI etc. from process.env, as they do on Netlify
   Object.assign(process.env, loadEnv(mode, process.cwd(), ""));
+  if (mode === "production" && !process.env.VITE_PRIVACY_EMAIL) {
+    console.warn("\n  VITE_PRIVACY_EMAIL isn't set: the privacy notice has no contact address (README → Privacy)\n");
+  }
   return {
     root: "web",
     build: { outDir: "dist", emptyOutDir: true },
@@ -120,6 +123,12 @@ export default defineConfig(({ mode }) => {
               urlPattern: ({ url }) => url.pathname === "/api/events" || url.pathname === "/api/cities",
               handler: "NetworkFirst",
               options: { cacheName: "events", networkTimeoutSeconds: 4, expiration: { maxEntries: 8, maxAgeSeconds: 2 * 86400 } },
+            },
+            {
+              // the self-hosted fonts (hashed file names, so a cached copy never goes stale)
+              urlPattern: ({ request, sameOrigin }) => sameOrigin && request.destination === "font",
+              handler: "CacheFirst",
+              options: { cacheName: "fonts", expiration: { maxEntries: 20 } },
             },
             {
               urlPattern: ({ url }) => url.pathname.startsWith("/.netlify/images"),

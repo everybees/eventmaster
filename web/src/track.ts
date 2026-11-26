@@ -1,10 +1,12 @@
 // Interaction tracking: queued on the device, sent in batches to POST /api/interactions.
 // Survives reloads and offline stretches; the server ignores items it already has, so resending is safe.
+// Nothing is recorded or sent until the person says yes (the first-run notice, or the switch in Saved).
 import type { Action, InteractionContext, InteractionItem } from "../../shared/types.ts";
 import { deviceId } from "./device.ts";
 
 const QUEUE_KEY = "wpg.queue";
-const OPT_OUT_KEY = "wpg.trackingOff";
+const CONSENT_KEY = "wpg.consent";     // "yes" or "no"; missing: not asked yet
+const OLD_OPT_OUT_KEY = "wpg.trackingOff"; // from before the question: "1" was "no"
 const BATCH = 50;        // the API's per-request limit
 const FLUSH_AT = 20;     // send early once this many are waiting
 const FLUSH_MS = 10_000;
@@ -26,7 +28,7 @@ function saveQueue(): void {
 }
 
 export function track(action: Action, eventId: string, context: InteractionContext = {}): void {
-  if (isOptedOut()) return;
+  if (consent() !== "yes") return;
   queue.push({ id: crypto.randomUUID(), eventId, action, at: new Date().toISOString(), context });
   if (queue.length > MAX_QUEUE) queue = queue.slice(-MAX_QUEUE);
   saveQueue();
@@ -34,7 +36,7 @@ export function track(action: Action, eventId: string, context: InteractionConte
 }
 
 export async function flush(useBeacon = false): Promise<void> {
-  if (sending || queue.length === 0) return;
+  if (sending || queue.length === 0 || consent() !== "yes") return;
   const batch = queue.slice(0, BATCH);
   const body = JSON.stringify({ deviceId: deviceId(), items: batch });
   if (useBeacon && navigator.sendBeacon) {
@@ -71,15 +73,24 @@ export function startTracking(): void {
   void flush();
 }
 
-export const isOptedOut = () => localStorage.getItem(OPT_OUT_KEY) === "1";
+export type Consent = "yes" | "no" | null;
 
-export function setOptedOut(off: boolean): void {
-  if (off) {
-    localStorage.setItem(OPT_OUT_KEY, "1");
+/** Whether this person agreed to share their activity; null until they've been asked. */
+export function consent(): Consent {
+  const value = localStorage.getItem(CONSENT_KEY);
+  if (value === "yes" || value === "no") return value;
+  return localStorage.getItem(OLD_OPT_OUT_KEY) === "1" ? "no" : null;
+}
+
+export function setConsent(yes: boolean): void {
+  localStorage.setItem(CONSENT_KEY, yes ? "yes" : "no");
+  localStorage.removeItem(OLD_OPT_OUT_KEY);
+  if (yes) {
+    void flush();
+  } else {
+    // anything recorded before they were asked, or before they said no, is never sent
     queue = [];
     saveQueue();
-  } else {
-    localStorage.removeItem(OPT_OUT_KEY);
   }
 }
 

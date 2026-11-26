@@ -260,12 +260,42 @@ describe("POST /api/interactions and /api/me", () => {
     assert.ok(Date.now() - started < 8000, `took ${Date.now() - started} ms`);
   });
 
+  test("GET /api/me/export has everything stored for the device, with event titles, and nothing else", async () => {
+    const other = randomUUID();
+    await interactionsFn(post("/api/interactions", { deviceId: other, items: [item(ID.music, "view", 1)] }), ctx());
+    const res = await meFn(get("/api/me/export", { "x-device-id": deviceId }), ctx());
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const data = (await res.json()) as {
+      deviceId: string; interactions: { eventId: string; event: string | null; action: string }[];
+      states: { eventId: string; state: string | null }[]; cityRequests: unknown[];
+    };
+    assert.equal(data.deviceId, deviceId);
+    assert.equal(data.interactions.length, await db.collection("interactions").countDocuments({ deviceId }));
+    assert.equal(data.interactions[0].event, `Event ${ID.music}`);
+    assert.equal(data.states.length, 3);
+    assert.ok(!JSON.stringify(data).includes(other));
+  });
+
   test("DELETE /api/me removes everything for the device", async () => {
     assert.equal((await meFn(get("/api/me/state"), ctx())).status, 400);
     const res = await meFn(new Request(`${BASE}/api/me`, { method: "DELETE", headers: { "x-device-id": deviceId } }), ctx());
     const { deleted } = (await res.json()) as { deleted: { interactions: number; states: number } };
     assert.ok(deleted.interactions >= 5 && deleted.states === 3, JSON.stringify(deleted));
     assert.equal(await db.collection("interactions").countDocuments({ deviceId }), 0);
+  });
+});
+
+describe("keeping data", () => {
+  test("nothing people stored expires, and the old expiry indexes are dropped", async () => {
+    await db.collection("interactions").createIndex({ receivedAt: 1 }, { name: "expire", expireAfterSeconds: 540 * 86400 });
+    await db.collection("cityRequestLog").createIndex({ at: 1 }, { name: "expire", expireAfterSeconds: 90 * 86400 });
+    await setupIndexes(db);
+    await setupIndexes(db); // and again, with nothing left to drop
+    for (const name of ["interactions", "userEventState", "cityRequestLog", "cityRequests"]) {
+      const ttl = (await db.collection(name).indexes()).filter((i) => i.expireAfterSeconds !== undefined);
+      assert.deepEqual(ttl, [], name);
+    }
   });
 });
 
