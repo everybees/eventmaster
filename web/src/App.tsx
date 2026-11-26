@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Action, ApiEvent, City, SwipeState, Via } from "../../shared/types.ts";
 import { deleteMyData, fetchCities, fetchEvents } from "./api.ts";
 import { CATEGORY_ORDER, styleFor } from "./categories.ts";
-import { cachedCities, cityName, rememberCities, saveCity, savedCity } from "./city.ts";
+import {
+  cachedCities, cityName, forgetRequest, rememberCities, rememberRequest, requestedCities, saveCity, savedCity,
+} from "./city.ts";
 import { CardStack, type Decision, type StackHandle } from "./components/CardStack.tsx";
 import { CityPicker } from "./components/CityPicker.tsx";
 import { Details } from "./components/Details.tsx";
@@ -24,6 +26,7 @@ export function App() {
   const [city, setCity] = useState<string | null>(savedCity);
   const [cities, setCities] = useState<City[] | null>(cachedCities);
   const [picking, setPicking] = useState(() => savedCity() === null); // first visit: ask where they are
+  const [requested, setRequested] = useState(requestedCities);
   const [events, setEvents] = useState<ApiEvent[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [store, dispatch] = useSwipeStore();
@@ -58,8 +61,16 @@ export function App() {
     return () => { current = false; };
   }, [city, reloads]);
 
+  // a city this person asked for that now has events: offer it (once)
+  const ready = requested.find((r) => r.slug !== city && cities?.some((c) => c.slug === r.slug && c.count > 0));
+  function dismissReady(slug: string) {
+    forgetRequest(slug);
+    setRequested(requestedCities());
+  }
+
   function pickCity(slug: string) {
     setPicking(false);
+    if (requested.some((r) => r.slug === slug)) dismissReady(slug);
     if (slug === city) return;
     saveCity(slug);
     setCity(slug);
@@ -193,6 +204,15 @@ export function App() {
             </div>
             <button type="button" className="icon-btn" aria-label="Reload events" onClick={load} disabled={!city}><IconRefresh /></button>
           </header>
+          {ready && (
+            <div className="ready-banner" role="status">
+              <span>Events for {ready.name} are ready.</span>
+              <button type="button" className="bar-btn primary" onClick={() => pickCity(ready.slug)}>Switch</button>
+              <button type="button" className="icon-btn" aria-label="Dismiss" onClick={() => dismissReady(ready.slug)}>
+                <IconX />
+              </button>
+            </div>
+          )}
           <nav className="chips" aria-label="Categories">
             {chips.map((c) => (
               <button type="button" key={c} className="chip" aria-pressed={category === c} onClick={() => setCategory(c)}>
@@ -241,7 +261,7 @@ export function App() {
           firstRun={!city}
           onPick={pickCity}
           onClose={() => setPicking(false)}
-          onRetry={loadCities}
+          onRequested={(slug, name) => { rememberRequest({ slug, name }); setRequested(requestedCities()); }}
         />
       )}
 

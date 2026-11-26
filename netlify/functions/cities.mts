@@ -1,11 +1,12 @@
 import type { Config } from "@netlify/functions";
 import type { CitiesResponse } from "../../shared/types.ts";
-import { CITY_SLUGS, cityInfo, DEFAULT_CITY } from "../lib/cities.mts";
+import { DEFAULT_CITY, liveCities } from "../lib/cities.mts";
 import { getDb } from "../lib/db.mts";
 import { error, FEED_CACHE, handler, json } from "../lib/http.mts";
 import type { EventDoc } from "../lib/models.mts";
 
-/** GET /api/cities — every city the app covers, with how many events each has in its feed now. */
+/** GET /api/cities — every city the app covers (including requested ones that went live), with how many
+ *  events each has in its feed now. */
 export default handler(async (req) => {
   if (req.method !== "GET") return error(405, "Use GET");
   const db = await getDb();
@@ -20,7 +21,7 @@ export default handler(async (req) => {
   }
   const body: CitiesResponse = {
     defaultCity: DEFAULT_CITY,
-    cities: CITY_SLUGS.map((slug) => ({ ...cityInfo(slug), count: counts.get(slug) ?? 0 })),
+    cities: (await liveCities(db)).map((c) => ({ ...c, count: counts.get(c.slug) ?? 0 })),
   };
   return json(body, { headers: FEED_CACHE });
 });

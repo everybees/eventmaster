@@ -1,7 +1,7 @@
 import type { Config } from "@netlify/functions";
 import type { Filter } from "mongodb";
 import type { EventsResponse } from "../../shared/types.ts";
-import { cityFilter, cityInfo, DEFAULT_CITY, isCity } from "../lib/cities.mts";
+import { cityFilter, DEFAULT_CITY, liveCities } from "../lib/cities.mts";
 import { getDb } from "../lib/db.mts";
 import { error, FEED_CACHE, handler, json } from "../lib/http.mts";
 import { soonestShowtimes, toApiEvent, todayIn, type EventDoc } from "../lib/models.mts";
@@ -21,7 +21,9 @@ export default handler(async (req) => {
   const to = parseDate(q.get("to"));
   if (from === null || to === null) return error(400, "from and to must be dates, e.g. 2026-11-28");
   const city = q.get("city") || DEFAULT_CITY;
-  if (!isCity(city)) return error(400, "Unknown city; GET /api/cities lists them");
+  const db = await getDb();
+  const info = (await liveCities(db)).find((c) => c.slug === city);
+  if (!info) return error(400, "Unknown city; GET /api/cities lists them");
 
   const now = new Date();
   const filter: Filter<EventDoc> = {
@@ -36,9 +38,8 @@ export default handler(async (req) => {
   if (tag) filter.tags = tag;
   const limit = Math.min(Math.max(Number.parseInt(q.get("limit") ?? "", 10) || DEFAULT_LIMIT, 1), MAX_LIMIT);
 
-  const db = await getDb();
   const docs = await db.collection<EventDoc>("events").find(filter).sort({ start: 1, _id: 1 }).limit(limit).toArray();
-  const today = todayIn(cityInfo(city).timezone, now);
+  const today = todayIn(info.timezone, now);
   const events = docs.map(toApiEvent).map((e) => (e.showtimes.length ? { ...e, showtimes: soonestShowtimes(e.showtimes, today) } : e));
   const body: EventsResponse = { city, generatedAt: now.toISOString(), count: docs.length, events };
   return json(body, { headers: FEED_CACHE });

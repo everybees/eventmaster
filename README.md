@@ -49,6 +49,7 @@ cp .env.example .env
 npm run db:local          # terminal 1, leave it running: MongoDB on :27018 (first run downloads it, ~140 MB)
 npm run db:setup          # terminal 2: create the indexes
 set -a; . ./.env; set +a
+.venv/bin/python crawler/load_places.py                    # the city search's places (GeoNames, ~3.5 MB)
 .venv/bin/python crawler/load_to_mongo.py                  # crawl Winnipeg into it (~5 minutes)
 .venv/bin/python crawler/load_to_mongo.py --city calgary   # and Calgary
 
@@ -111,6 +112,28 @@ through AllEvents, which lists many of them and links to their Eventbrite ticket
 
 Event IDs include the city, except Winnipeg's, which predate cities and stay as they were.
 
+### Cities people ask for
+
+The city sheet is a search box and "Use my location". Results appear as you type: GeoNames' cities and towns
+(15,000+ people, loaded into `places` by `crawler/load_places.py`), covered ones first.
+- **A covered city** opens straight away. A place within 20 km of one counts as it (Waterloo opens
+  Kitchener-Waterloo).
+- **Any other city or town** can be added. Being in GeoNames' list is the check that it's a real place. The
+  request is logged in `cityRequests` (one per city, with how many devices asked) and `cityRequestLog` (one per
+  device and day, five at most).
+- **The next scheduled crawl tries it.** `load_to_mongo.py --list-cities` adds pending requests, most asked-for
+  first, up to 50 at a time; the rest wait as "waitlisted". Its settings are built from the request: AllEvents'
+  city pages, Ticketmaster, and Eventbrite when switched on. Cinemas are only set up by hand.
+- **It goes live** (`active`) if that crawl finds at least 5 events. From then on it's in `GET /api/cities`, its
+  feed works, and the app tells whoever asked ("Events for Abeokuta are ready"). Otherwise it's `unavailable`,
+  and the app says no events were found; it's tried again if someone asks after a month. A city that AllEvents
+  has no page for (it redirects to its worldwide page) finds nothing, rather than someone else's events.
+- **"Use my location"** opens a covered city within 25 km. Otherwise the app sends the position, rounded to 0.1°
+  (about 10 km), to `GET /api/places/nearest`, which names the place and offers to add it, along with the
+  nearest covered city in the meantime.
+
+To make a requested city permanent (cinemas, local sources, venue rules), add it to `shared/cities.json`.
+
 ## Tests
 
 ```sh
@@ -125,13 +148,16 @@ MONGODB_TEST_URI=mongodb://127.0.0.1:27018 .venv/bin/python -m unittest discover
 **MongoDB Atlas**
 1. Create a cluster in the same AWS region as your Netlify site's functions.
 2. Create three database users:
-   - **app:** read on `events`; readWrite on `interactions` and `userEventState`
-   - **crawler:** readWrite on `events` and `runs`
+   - **app:** read on `events` and `places`; readWrite on `interactions`, `userEventState`, `cityRequests` and
+     `cityRequestLog`
+   - **crawler:** readWrite on `events`, `runs`, `places` and `cityRequests`
    - **admin:** for `npm run db:setup` only
 3. Network access: Netlify Functions and GitHub Actions have no fixed IP addresses, so allow `0.0.0.0/0` and rely
    on strong passwords.
-4. `MONGODB_URI=<admin URI> npm run db:setup`
-   Run it again after an update that adds indexes (the per-city ones, for example).
+4. Create the indexes and load the places: **Actions → Set up places and indexes → Run workflow**. It uses the
+   secret `MONGODB_ADMIN_URI` if there is one, else `MONGODB_CRAWLER_URI`. Or locally:
+   `MONGODB_URI=<admin URI> npm run db:setup`, then `MONGODB_URI=<crawler URI> python3 crawler/load_places.py`.
+   Run it again after an update that adds indexes, and yearly to refresh the places.
 
 **Netlify:** create a site from this repo. `netlify.toml` sets the build, the publish folder, the functions and the
 image hosts. Under Environment variables, add `MONGODB_URI` (the app user) and `MONGODB_DB`, and optionally
@@ -149,11 +175,14 @@ stopped returning events or most of the crawl failed; the run's output says whic
 | | |
 |---|---|
 | `GET /api/events` | A city's feed, soonest first. `city` (default: the first city), and filters `category`, `tag`, `from`, `to`, `limit` (≤ 500). Films carry each cinema's next two days of showtimes. CDN-cached. |
-| `GET /api/cities` | Every city, with its event count. CDN-cached. |
+| `GET /api/cities` | Every city with a feed (including requested ones that went live), with its event count. CDN-cached. |
+| `GET /api/places?q=` | Cities and towns starting with `q` (2+ characters), covered ones first, each with its covered `city` or its request status. Cached briefly. |
+| `GET /api/places/nearest?lat=&lon=` | The nearest city or town (position rounded to 0.1°), and the nearest covered city |
+| `POST /api/city-requests` | `{ deviceId, placeId }`: "add my city". Answers `covered`, `pending`, `waitlisted` or `unavailable`; 429 after 5 a day from one device |
 | `GET /api/events/:id` | One event, including recently removed ones, with all its showtimes |
 | `POST /api/interactions` | `{ deviceId, items: [{ id, eventId, action, at, context }] }`, ≤ 50 items. Safe to retry. |
 | `GET /api/me/state` | This device's saved / passed / later events (`X-Device-Id` header) |
-| `DELETE /api/me` | Delete everything stored for this device |
+| `DELETE /api/me` | Delete everything stored for this device, its city requests included |
 
 Actions: `view`, `details`, `save`, `pass`, `later`, `unsave`, `undo`, `open_link`, `tickets`, `map`, `share`, `calendar`.
 
@@ -189,6 +218,9 @@ Canadian and US advertising rules expect.
 | `interactions` | swipe, tap or click | Append-only; the `_id` comes from the device, so resent items are ignored; deleted after ~18 months |
 | `userEventState` | device × event | Current saved / passed / later; a late batch can't overwrite a newer swipe |
 | `runs` | crawl | Per-source counts, errors and status |
+| `places` | city or town | GeoNames' places with 15,000+ people: name, region, country, currency, time zone, position |
+| `cityRequests` | requested city | Its place's details, how many devices asked, and its status after crawls |
+| `cityRequestLog` | request | Device, place and time; for the daily limit; deleted after 90 days |
 
 Every event has a `city` (Winnipeg's from before cities have none, and count as Winnipeg's). Each city's crawl
 only marks its own events removed, and compares its total with that city's last run. A run is an alert (the
@@ -205,9 +237,13 @@ as listed, and the app displays those, so outdated time-zone rules can't shift t
 
 There are no accounts yet. Each device gets a random ID. Interactions carry no name, email, IP or location,
 and the app has a switch to stop sending them, plus a "Delete my data" button. "Use my location" asks the
-browser for a position and works out the nearest city on the phone; the position is never sent anywhere. Venues
-and cinemas link to Google Maps; Google gets nothing unless someone taps one. Before a public launch, add a
-privacy notice: Canada's PIPEDA expects meaningful consent.
+browser for a position. A covered city within 25 km is found on the phone; otherwise the position goes to the
+API rounded to about 10 km, only to name the place, and isn't stored. A city someone asks to add is logged
+with their device's ID (and deleted with "Delete my data"). Venues and cinemas link to Google Maps; Google gets
+nothing unless someone taps one. Before a public launch, add a privacy notice: Canada's PIPEDA expects
+meaningful consent.
+
+Place names come from [GeoNames](https://www.geonames.org) (CC BY 4.0); the city sheet credits it.
 
 ## Not done yet
 

@@ -24,6 +24,9 @@ HEALTHY_SHARE = 0.5               # a run with under half the last run's events 
 FEED_GRACE = timedelta(hours=6)   # as in events.wanted(): an event stays listed this long after it ends
 TICKET_RECHECK = timedelta(hours=24)  # how often an AllEvents page is fetched again for its ticket link
 SYNOPSIS_RECHECK = timedelta(days=7)  # how often a film's page is fetched again for its synopsis
+# Requested cities (the app's "add my city"): see netlify/functions/city-requests.mts
+MAX_REQUESTED_CITIES = 50  # crawled at once, most requested first; the rest wait
+MIN_EVENTS = 5             # a requested city goes live once a crawl finds at least this many events
 FAILED_SOURCE_RE = re.compile(r"^\s*! (.+?)(?::| ->) ")  # "  ! AllEvents (…): https://… -> HTTP Error 405"
 
 
@@ -85,6 +88,50 @@ def build_docs(selected):
             d = to_doc(e)
             docs.setdefault(d["_id"], d)
     return list(docs.values())
+
+
+def requested_city(doc):
+    """Crawl settings for a city someone asked for (a `cityRequests` document), in shared/cities.json's
+    shape: AllEvents (both its usual pages and the city home page, since cities differ in which carries
+    the data), Ticketmaster (it finds nothing where it doesn't sell, at the cost of one request) and
+    Eventbrite when enabled. No cinemas: those are set up by hand."""
+    ae = re.sub(r"[^a-z0-9]+", "-", E.norm(doc["ascii"])).strip("-")
+    country = re.sub(r"[^a-z0-9]+", "-", E.norm(doc["countryName"])).strip("-")
+    return {
+        "name": doc["name"], "region": doc.get("region", ""), "country": doc["country"],
+        "timezone": doc["timezone"], "currency": doc.get("currency") or "USD", "lat": doc["lat"], "lon": doc["lon"],
+        "requested": True,
+        "crawl": {
+            "eventbrite": f"{country}--{ae}", "allevents": ae,
+            "allEventsPages": {
+                "AllEvents (incl. Facebook events)": [f"https://allevents.in/{ae}/all?page={{page}}",
+                                                      f"https://allevents.in/{ae}?page={{page}}"],
+                "AllEvents (movies & film)": [f"https://allevents.in/{ae}/movies?page={{page}}"],
+            },
+            "ticketmaster": {"city": doc["name"], "countryCode": doc["country"]},
+            "cinemaclock": [], "sources": {}, "sourceVenues": {}, "venueRules": {},
+        },
+    }
+
+
+def cities_to_crawl(db):
+    """The configured cities, then requested ones still waiting for a first crawl or live, most requested
+    first and capped. Without a database, just the configured ones."""
+    static = list(E.CITIES)
+    if db is None:
+        return static
+    docs = db.cityRequests.find({"status": {"$in": ["pending", "active"]}}, {"_id": 1}) \
+        .sort([("requests", -1), ("firstRequestedAt", 1)]).limit(MAX_REQUESTED_CITIES)
+    return static + [d["_id"] for d in docs if d["_id"] not in E.CITIES]
+
+
+def mark_requested_city(db, slug, run):
+    """After a requested city's crawl: live once it has enough events, else unavailable (the app says so;
+    it's tried again if someone asks after a month)."""
+    status = "active" if run["total"] >= MIN_EVENTS else "unavailable"
+    db.cityRequests.update_one({"_id": slug}, {"$set": {
+        "status": status, "eventCount": run["total"], "lastCrawledAt": run["finishedAt"]}})
+    return status
 
 
 def known_synopses(db, now):
@@ -170,7 +217,10 @@ def load(db, docs, source_counts, report, run_start, city=E.DEFAULT_CITY):
 
 def main():
     ap = argparse.ArgumentParser(description="Crawl one city's events and upsert them into MongoDB.")
-    ap.add_argument("--city", choices=sorted(E.CITIES), default=E.DEFAULT_CITY, help=f"default {E.DEFAULT_CITY}")
+    ap.add_argument("--city", default=E.DEFAULT_CITY,
+                    help=f"a city in shared/cities.json or a requested one (default {E.DEFAULT_CITY})")
+    ap.add_argument("--list-cities", action="store_true",
+                    help="print the cities to crawl, as JSON (the scheduled crawl's job list), and stop")
     ap.add_argument("--days", type=int, default=30, help="look-ahead window (default 30)")
     ap.add_argument("--pages", type=int, default=2, help="pages per paginated source (default 2)")
     ap.add_argument("--delay", type=float, default=1.5, help="seconds between requests")
@@ -179,22 +229,32 @@ def main():
                     help="don't fetch AllEvents event pages for their ticket links (a quicker run)")
     args = ap.parse_args()
 
-    E.use_city(args.city)
-    a = E.build_parser().parse_args(["--city", args.city, "--days", str(args.days), "--pages", str(args.pages),
-                                     "--delay", str(args.delay)])
     uri = os.environ.get("MONGODB_URI")
+    if args.list_cities:
+        return list_cities(uri)
     if not uri and not args.dry_run:
         sys.exit("MONGODB_URI is not set (or use --dry-run)")
     run_start = datetime.now(timezone.utc)
-    now = datetime.now(E.LOCAL_TZ)
-    end = now + timedelta(days=a.days)
 
     client = None
-    if not args.dry_run:
+    if uri and not (args.dry_run and args.city in E.CITIES):
         from pymongo import MongoClient
         client = MongoClient(uri, tz_aware=True, appname="wpg-events-crawler")
     try:
         db = client[os.environ.get("MONGODB_DB") or DEFAULT_DB] if client else None
+        requested = args.city not in E.CITIES
+        if requested:
+            doc = db.cityRequests.find_one({"_id": args.city}) if db is not None else None
+            if not doc:
+                sys.exit(f"{args.city} is neither in shared/cities.json nor a requested city")
+            E.CITIES[args.city] = requested_city(doc)
+        E.use_city(args.city)
+        a = E.build_parser().parse_args(["--city", args.city, "--days", str(args.days), "--pages", str(args.pages),
+                                         "--delay", str(args.delay)])
+        now = datetime.now(E.LOCAL_TZ)
+        end = now + timedelta(days=a.days)
+        if args.dry_run:
+            db = None  # read the request above, but write nothing
         if db is not None:
             E.SYNOPSES.update(known_synopses(db, run_start))
         print(f"Crawling {E.CITY_NAME}")
@@ -214,11 +274,17 @@ def main():
                 print(json.dumps(docs[0], default=str, indent=2, ensure_ascii=False))
             return 0
         run = load(db, docs, source_counts, report, run_start, E.CITY)
+        if requested:
+            status = mark_requested_city(db, E.CITY, run)
     finally:
         if client:
             client.close()
     print(f"Loaded: {run['upserted']} new, {run['modified']} updated, {run['removed']} marked removed "
           f"(status: {run['status']})")
+    if requested:
+        # a requested city's sources may well not exist (AllEvents has no page for it): that's an answer, not a failure
+        print(f"Requested city: {status} ({run['total']} events; {MIN_EVENTS} needed to go live)")
+        return 0
     if run["status"] == "partial":
         print(f"! Only {run['total']} events, under half of the last run; nothing was marked removed.", file=sys.stderr)
         return 3
@@ -229,6 +295,24 @@ def main():
         if run["failedSources"]:
             print("! These sources failed and found nothing: " + ", ".join(run["failedSources"]), file=sys.stderr)
         return 2
+    return 0
+
+
+def list_cities(uri):
+    """Print the slugs to crawl as a JSON array. If the requested cities can't be read (no database, or a
+    user without access to cityRequests), the configured cities."""
+    slugs = cities_to_crawl(None)
+    if uri:
+        try:
+            from pymongo import MongoClient
+            client = MongoClient(uri, serverSelectionTimeoutMS=10_000)
+            try:
+                slugs = cities_to_crawl(client[os.environ.get("MONGODB_DB") or DEFAULT_DB])
+            finally:
+                client.close()
+        except Exception as ex:
+            print(f"! Requested cities unavailable ({ex}); crawling the configured ones", file=sys.stderr)
+    print(json.dumps(slugs))
     return 0
 
 

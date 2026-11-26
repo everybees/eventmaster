@@ -10,15 +10,26 @@ concurrency:
   cancel-in-progress: false # never two crawls at once
 
 jobs:
-  # the cities to crawl: every one in shared/cities.json
+  # the cities to crawl: every one in shared/cities.json, then cities people asked for in the app
+  # (waiting for a first crawl, or live), most requested first; just the first kind if MongoDB is unreachable
   cities:
     runs-on: ubuntu-latest
     outputs:
       list: ${{ steps.list.outputs.list }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: crawler/requirements.txt
+      - run: pip install -r crawler/requirements.txt
       - id: list
-        run: echo "list=$(jq -c 'keys_unsorted' shared/cities.json)" >> "$GITHUB_OUTPUT"
+        run: echo "list=$(python crawler/load_to_mongo.py --list-cities)" >> "$GITHUB_OUTPUT"
+        env:
+          MONGODB_URI: ${{ secrets.MONGODB_CRAWLER_URI }}
+          MONGODB_DB: ${{ vars.MONGODB_DB || 'wpg_events' }}
+          PYTHONTZPATH: ""
 
   crawl:
     needs: cities

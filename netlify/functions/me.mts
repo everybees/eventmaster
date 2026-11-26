@@ -3,11 +3,12 @@ import type { StateResponse, SwipeState } from "../../shared/types.ts";
 import { getDb } from "../lib/db.mts";
 import { error, handler, json, UUID } from "../lib/http.mts";
 import type { InteractionDoc, StateDoc } from "../lib/models.mts";
+import type { CityRequestLogDoc } from "../lib/places.mts";
 
 /**
  * The device's own data, identified by its X-Device-Id header (a random UUID the app keeps).
  *   GET    /api/me/state  saved / passed / later per event, to restore on a reinstall or new device
- *   DELETE /api/me        "delete my data": every interaction and state for this device
+ *   DELETE /api/me        "delete my data": every interaction, state and city request from this device
  * Anyone holding a device ID can read or delete its data, which is why IDs are random UUIDs
  * and never shown. Accounts will replace this with real sign-in.
  */
@@ -28,11 +29,14 @@ export default handler(async (req) => {
     return json(body, { headers: { "cache-control": "no-store" } });
   }
   if (req.method === "DELETE" && path === "/api/me") {
-    const [interactions, removedStates] = await Promise.all([
+    const [interactions, removedStates, cityRequests] = await Promise.all([
       db.collection<InteractionDoc>("interactions").deleteMany({ deviceId }),
       states.deleteMany({ "_id.u": deviceId }),
+      db.collection<CityRequestLogDoc>("cityRequestLog").deleteMany({ deviceId }),
     ]);
-    return json({ deleted: { interactions: interactions.deletedCount, states: removedStates.deletedCount } });
+    return json({ deleted: {
+      interactions: interactions.deletedCount, states: removedStates.deletedCount, cityRequests: cityRequests.deletedCount,
+    } });
   }
   return error(405, "Use GET /api/me/state or DELETE /api/me");
 });

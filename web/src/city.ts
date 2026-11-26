@@ -2,6 +2,7 @@ import type { City } from "../../shared/types.ts";
 
 const CITY_KEY = "wpg.city";
 const LIST_KEY = "wpg.cities"; // the last list from the server, for names while offline
+const REQUESTED_KEY = "wpg.requested"; // cities this person asked for, to say when they're ready
 
 /** The city this person picked, or null on their first visit. */
 export const savedCity = (): string | null => localStorage.getItem(CITY_KEY);
@@ -23,6 +24,28 @@ export function rememberCities(cities: City[], defaultCity: string): void {
   localStorage.setItem(LIST_KEY, JSON.stringify(known));
 }
 
+export interface Requested {
+  slug: string;
+  name: string;
+}
+
+export function requestedCities(): Requested[] {
+  try {
+    return JSON.parse(localStorage.getItem(REQUESTED_KEY) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+export function rememberRequest(r: Requested): void {
+  const list = requestedCities().filter((x) => x.slug !== r.slug);
+  localStorage.setItem(REQUESTED_KEY, JSON.stringify([...list, r]));
+}
+
+export function forgetRequest(slug: string): void {
+  localStorage.setItem(REQUESTED_KEY, JSON.stringify(requestedCities().filter((x) => x.slug !== slug)));
+}
+
 /** "Winnipeg". Events saved before cities have no city; they're the first city's. */
 export function cityName(slug: string | undefined): string {
   const s = slug ?? known?.defaultCity;
@@ -32,15 +55,6 @@ export function cityName(slug: string | undefined): string {
 /** The currency of a city's prices, for listings that don't name theirs. */
 export const cityCurrency = (slug: string | undefined): string | null =>
   known?.cities.find((c) => c.slug === (slug ?? known?.defaultCity))?.currency ?? null;
-
-/** "Canada" for "CA". */
-export function countryName(code: string): string {
-  try {
-    return new Intl.DisplayNames(["en"], { type: "region" }).of(code) ?? code;
-  } catch {
-    return code;
-  }
-}
 
 /** Great-circle distance in km. */
 export function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {

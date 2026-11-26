@@ -61,8 +61,8 @@ export function Saved({ events, trackingOff, onOpen, onRemove, onTrackingChange,
       <section className="privacy" aria-label="Privacy">
         <p>
           Your saved list stays on this phone. To improve the feed, the app also sends what you swipe, with a random
-          ID for this device. No name, email or location: “Use my location” only works out the nearest city, on
-          this phone.
+          ID for this device. No name or email. “Use my location” rounds your position to about 10 km and uses
+          it only to find your city; a city you ask us to add is logged with this device’s ID.
         </p>
         <label className="toggle">
           <input type="checkbox" checked={!trackingOff} onChange={(e) => onTrackingChange(!e.target.checked)} />

@@ -38,6 +38,38 @@ export interface CitiesResponse {
   cities: City[];
 }
 
+/** Where a request for a city we don't cover stands: waiting for its first crawl, crawled with too few
+ *  events to show, or waiting its turn (only so many requested cities are crawled at once). */
+export type CityRequestStatus = "pending" | "unavailable" | "waitlisted";
+
+/** A city or town from the search or "Use my location" (GeoNames' places with 15,000+ people). */
+export interface PlaceResult {
+  id: number;                        // GeoNames ID; 0 for a covered city found by its own name
+  name: string;
+  region: string;                    // "Ogun State"
+  country: string;                   // "NG"
+  countryName: string;               // "Nigeria"
+  lat: number;
+  lon: number;
+  city: string | null;               // the covered city it's in or beside (within 20 km)
+  request: CityRequestStatus | null; // not covered, and someone asked for it
+}
+
+export interface PlacesResponse {
+  places: PlaceResult[];
+}
+
+export interface NearestResponse {
+  place: PlaceResult | null;                                  // the nearest city or town
+  city: { slug: string; name: string; km: number } | null;   // the nearest covered city
+}
+
+export interface CityRequestResponse {
+  status: "covered" | "active" | CityRequestStatus;
+  city: string; // slug: the covered city, or the requested one's future slug
+  name: string;
+}
+
 /** Where to buy: the event's page when it sells tickets (Eventbrite, Ticketmaster), or the seller a listing
  *  names (AllEvents does); null when neither. Films are bought per showing (Showtime.tickets). */
 export interface Tickets {

@@ -131,6 +131,40 @@ class Sources(unittest.TestCase):
         self.assertEqual(E.norm_ld(dict(ev, offers={"price": "5000", "priceCurrency": "naira"}), "x")["currency"], "")
 
 
+ABEOKUTA = {"_id": "abeokuta-ng", "placeId": 2352947, "name": "Abeokuta", "ascii": "Abeokuta", "region": "Ogun State",
+            "country": "NG", "countryName": "Nigeria", "currency": "NGN", "timezone": "Africa/Lagos", "lat": 7.16,
+            "lon": 3.35, "population": 735000, "status": "pending", "requests": 3,
+            "firstRequestedAt": datetime(2026, 11, 26, tzinfo=timezone.utc)}
+
+
+class RequestedCities(unittest.TestCase):
+    def tearDown(self):
+        E.CITIES.pop("abeokuta-ng", None)
+        E.use_city(E.DEFAULT_CITY)
+
+    def test_settings_come_from_the_request(self):
+        E.CITIES["abeokuta-ng"] = L.requested_city(ABEOKUTA)
+        E.use_city("abeokuta-ng")
+        self.assertEqual((E.CITY_NAME, str(E.LOCAL_TZ)), ("Abeokuta", "Africa/Lagos"))
+        self.assertEqual(E.JSONLD_SOURCES["AllEvents (incl. Facebook events)"],
+                         ["https://allevents.in/abeokuta/all?page={page}", "https://allevents.in/abeokuta?page={page}"])
+        self.assertEqual(E.TICKETMASTER_PLACE, {"city": "Abeokuta", "countryCode": "NG"})
+        self.assertEqual((E.CINEMACLOCK_THEATRES, E.SILVERBIRD_CINEMAS), ([], []))
+
+    def test_names_normalize_as_the_api_does(self):
+        # tests/api.test.mts checks netlify/lib/places.mts's normalizeName against the same pairs
+        for name, key in [("St. John's", 'st johns'), ('Montréal', 'montreal'), ('Kitchener-Waterloo', 'kitchener waterloo'), ('  Québec   City ', 'quebec city'), ('Ōsaka', 'osaka')]:
+            self.assertEqual(E.norm(name), key)
+
+    def test_a_redirect_away_from_the_city_means_no_page(self):
+        self.assertFalse(E.same_place("https://allevents.in/abeokuta?page=1", "https://allevents.in/events?page=1"))
+        self.assertTrue(E.same_place("https://allevents.in/lagos?page=2", "https://allevents.in/lagos?page=2"))
+        self.assertTrue(E.same_place("https://allevents.in/calgary/all?page=1", "https://allevents.in/calgary/all"))
+
+    def test_without_a_database_only_the_configured_cities(self):
+        self.assertEqual(L.cities_to_crawl(None), list(E.CITIES))
+
+
 class Synopses(unittest.TestCase):
     def setUp(self):
         self.real, self.fetched = E.page_synopsis, []
@@ -315,6 +349,20 @@ class Load(unittest.TestCase):
                    "  ! Test: https://example.com/?page=2 -> timed out"]
         run = self.run_with("Calgary 1", at=t0 + timedelta(hours=48), city="calgary", report=blocked)
         self.assertEqual((run["status"], run["failedSources"], run["droppedSources"]), ("alert", ["Blocked"], []))
+
+    def test_requested_cities_to_crawl_and_going_live(self):
+        reqs = self.db.cityRequests
+        reqs.insert_many([dict(ABEOKUTA), dict(ABEOKUTA, _id="ibadan-ng", placeId=2, requests=9),
+                          dict(ABEOKUTA, _id="ilorin-ng", placeId=3, status="unavailable", requests=20),
+                          dict(ABEOKUTA, _id="jos-ng", placeId=4, status="waitlisted", requests=30),
+                          dict(ABEOKUTA, _id="kano-ng", placeId=5, status="active", requests=1)])
+        # configured cities, then pending and live requested ones, most requested first
+        self.assertEqual(L.cities_to_crawl(self.db), list(E.CITIES) + ["ibadan-ng", "abeokuta-ng", "kano-ng"])
+        done = datetime(2026, 11, 26, 18, tzinfo=timezone.utc)
+        self.assertEqual(L.mark_requested_city(self.db, "abeokuta-ng", {"total": 12, "finishedAt": done}), "active")
+        self.assertEqual(L.mark_requested_city(self.db, "ibadan-ng", {"total": 2, "finishedAt": done}), "unavailable")
+        self.assertEqual(reqs.find_one({"_id": "abeokuta-ng"})["eventCount"], 12)
+        self.assertEqual(L.cities_to_crawl(self.db), list(E.CITIES) + ["abeokuta-ng", "kano-ng"])
 
 
 if __name__ == "__main__":

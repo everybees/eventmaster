@@ -25,7 +25,7 @@ Usage:
   python3 crawler/events.py --category movies
   python3 crawler/events.py --url https://some-venue.ca/events
 """
-import argparse, collections, csv, hashlib, html, json, os, re, sys, time
+import argparse, collections, csv, hashlib, html, json, os, re, sys, time, unicodedata
 import urllib.request, urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -49,14 +49,33 @@ SHOWTIME_SUFFIX_RE = re.compile(r" - \d{1,2}/\d{1,2}/\d{2,4} ?@ ?\d{1,2}:\d{2} ?
 
 
 def fetch(url, timeout=25):
+    return fetch_final(url, timeout)[0]
+
+
+def fetch_final(url, timeout=25):
+    """(page, the URL it ended up at after any redirects)."""
     # listings link to addresses like /matambú-la-cumbia; escape anything that isn't ASCII
     url = urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "en-CA,en"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode(r.headers.get_content_charset() or "utf-8", "replace")
+        return r.read().decode(r.headers.get_content_charset() or "utf-8", "replace"), r.geturl()
+
+
+def same_place(url, final):
+    """Whether a redirect stayed on the page asked for. AllEvents sends a city it has no page for to its
+    worldwide /events page (allevents.in/abeokuta -> /events), whose events aren't that city's."""
+    first = lambda u: urllib.parse.urlsplit(u).path.strip("/").split("/")[0].lower()
+    return first(url) == first(final)
 
 
 TAG_RE = re.compile(r"<[^>]+>")
+
+def norm(s):
+    """Search key: "St. John's" -> "st johns", "Montréal" -> "montreal" (as load_places.py and the API)."""
+    s = "".join(ch for ch in unicodedata.normalize("NFKD", s or "") if not unicodedata.combining(ch)).lower()
+    s = re.sub(r"['’`]", "", s)
+    return re.sub(r"[^a-z0-9]+", " ", s).strip()
+
 
 def clean(s, limit=None):
     """Unescape HTML (including double-encoded '&amp;amp;'), drop tags, collapse whitespace."""
@@ -138,7 +157,10 @@ def norm_ld(ev, source):
 
 def scrape_jsonld(url, source):
     out = []
-    for block in LDJSON_RE.findall(fetch(url)):
+    page, final = fetch_final(url)
+    if "allevents.in" in url and not same_place(url, final):
+        return out  # AllEvents has no page for this city and redirected elsewhere
+    for block in LDJSON_RE.findall(page):
         try:
             data = json.loads(block.strip())
         except json.JSONDecodeError:

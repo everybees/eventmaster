@@ -8,7 +8,11 @@ import type { Context } from "@netlify/functions";
 import Ajv2020 from "ajv/dist/2020.js";
 import { MongoMemoryServer } from "mongodb-memory-server";
 import type { Db } from "mongodb";
-import type { ApiEvent, CitiesResponse, EventsResponse, StateResponse } from "../shared/types.ts";
+import type {
+  ApiEvent, CitiesResponse, CityRequestResponse, EventsResponse, NearestResponse, PlacesResponse, StateResponse,
+} from "../shared/types.ts";
+import { forgetLiveCities } from "../netlify/lib/cities.mts";
+import { normalizeName, type PlaceDoc } from "../netlify/lib/places.mts";
 import { closeDb, getDb } from "../netlify/lib/db.mts";
 import { setupIndexes } from "../netlify/lib/indexes.mts";
 import { soonestShowtimes, todayIn, type EventDoc } from "../netlify/lib/models.mts";
@@ -18,6 +22,8 @@ import eventFn from "../netlify/functions/event.mts";
 import citiesFn from "../netlify/functions/cities.mts";
 import interactionsFn from "../netlify/functions/interactions.mts";
 import meFn from "../netlify/functions/me.mts";
+import placesFn from "../netlify/functions/places.mts";
+import cityRequestsFn from "../netlify/functions/city-requests.mts";
 
 const BASE = "http://localhost:8888";
 const HOUR = 3600_000;
@@ -260,5 +266,99 @@ describe("POST /api/interactions and /api/me", () => {
     const { deleted } = (await res.json()) as { deleted: { interactions: number; states: number } };
     assert.ok(deleted.interactions >= 5 && deleted.states === 3, JSON.stringify(deleted));
     assert.equal(await db.collection("interactions").countDocuments({ deviceId }), 0);
+  });
+});
+
+describe("finding and requesting cities", () => {
+  const place = (id: number, name: string, country: string, countryName: string, region: string, lat: number, lon: number,
+    population: number): PlaceDoc => ({
+    _id: id, name, ascii: name, key: name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(), region, country, countryName,
+    currency: country === "NG" ? "NGN" : "CAD", timezone: country === "NG" ? "Africa/Lagos" : "America/Toronto", population,
+    lat, lon, location: { type: "Point", coordinates: [lon, lat] },
+  });
+  const PLACES = {
+    winnipeg: place(6183235, "Winnipeg", "CA", "Canada", "Manitoba", 49.88, -97.15, 705244),
+    waterloo: place(6176823, "Waterloo", "CA", "Canada", "Ontario", 43.47, -80.52, 104986),
+    abeokuta: place(2352947, "Abeokuta", "NG", "Nigeria", "Ogun State", 7.16, 3.35, 735000),
+    lagosNg: place(2332459, "Lagos", "NG", "Nigeria", "Lagos", 6.45, 3.39, 15388000),
+    lagosPt: place(2267226, "Lagos", "PT", "Portugal", "Faro", 37.1, -8.67, 33494),
+  };
+  const deviceId = randomUUID();
+  const search = async (q: string) => ((await (await placesFn(get(`/api/places?q=${encodeURIComponent(q)}`), ctx())).json()) as PlacesResponse).places;
+  const ask = async (placeId: unknown, device = deviceId) => cityRequestsFn(post("/api/city-requests", { deviceId: device, placeId }), ctx());
+
+  before(async () => {
+    await db.collection<PlaceDoc>("places").insertMany(Object.values(PLACES));
+    forgetLiveCities();
+  });
+
+  test("names normalize as the crawler's norm() does", () => {
+    // crawler/tests/test_load_to_mongo.py checks events.norm against the same pairs
+    const pairs = [["St. John's", "st johns"], ["Montréal", "montreal"], ["Kitchener-Waterloo", "kitchener waterloo"],
+      ["  Québec   City ", "quebec city"], ["Ōsaka", "osaka"]];
+    for (const [name, key] of pairs) assert.equal(normalizeName(name), key);
+  });
+
+  test("search: covered cities first, one entry each; other places by size", async () => {
+    assert.deepEqual((await search("Winn")).map((p) => [p.name, p.city]), [["Winnipeg", "winnipeg"]]);
+    // Kitchener-Waterloo by its own name, and Waterloo (the place) as part of it: one entry
+    assert.deepEqual((await search("kitch")).map((p) => p.city), ["kitchener-waterloo"]);
+    assert.deepEqual((await search("waterloo")).map((p) => [p.name, p.city]), [["Waterloo", "kitchener-waterloo"]]);
+    const lagos = await search("lagos");
+    assert.deepEqual(lagos.map((p) => [p.name, p.country, p.city]), [["Lagos", "NG", "lagos"], ["Lagos", "PT", null]]);
+    assert.deepEqual((await search("abeo")).map((p) => [p.name, p.region, p.city, p.request]), [["Abeokuta", "Ogun State", null, null]]);
+    assert.deepEqual(await search("a"), []); // too short
+  });
+
+  test("nearest: the place and the nearest covered city, from a rounded position", async () => {
+    const res = await placesFn(get("/api/places/nearest?lat=7.1612&lon=3.3488"), ctx());
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const near = (await res.json()) as NearestResponse;
+    assert.deepEqual([near.place?.name, near.place?.city, near.city?.slug], ["Abeokuta", null, "lagos"]);
+    assert.ok(near.city && near.city.km > 60 && near.city.km < 100, `${near.city?.km} km`);
+    const home = (await (await placesFn(get("/api/places/nearest?lat=49.9&lon=-97.1"), ctx())).json()) as NearestResponse;
+    assert.equal(home.place?.city, "winnipeg");
+    assert.equal((await placesFn(get("/api/places/nearest?lat=north"), ctx())).status, 400);
+  });
+
+  test("a request: covered places say so; a new city is logged once per device and waits for its crawl", async () => {
+    assert.deepEqual(await (await ask(PLACES.waterloo._id)).json(), { status: "covered", city: "kitchener-waterloo", name: "Kitchener-Waterloo" });
+    const first = (await (await ask(PLACES.abeokuta._id)).json()) as CityRequestResponse;
+    assert.deepEqual(first, { status: "pending", city: "abeokuta-ng", name: "Abeokuta" });
+    await ask(PLACES.abeokuta._id);                // the same device again
+    await ask(PLACES.abeokuta._id, randomUUID());  // someone else
+    const doc = await db.collection("cityRequests").findOne({ _id: "abeokuta-ng" as never });
+    assert.deepEqual([doc?.requests, doc?.timezone, doc?.currency], [2, "Africa/Lagos", "NGN"]);
+    assert.equal((await search("abeo"))[0].request, "pending");
+    // a namesake gets its own slug
+    assert.equal(((await (await ask(PLACES.lagosPt._id)).json()) as CityRequestResponse).city, "lagos-pt");
+    assert.equal((await ask(999)).status, 404);
+    assert.equal((await ask("abc")).status, 400);
+    assert.equal((await cityRequestsFn(post("/api/city-requests", { deviceId: "me", placeId: 1 }), ctx())).status, 400);
+  });
+
+  test("at most five requests a day per device", async () => {
+    const busy = randomUUID();
+    for (let i = 0; i < 5; i++) assert.equal((await ask(PLACES.abeokuta._id, busy)).status, 200);
+    assert.equal((await ask(PLACES.abeokuta._id, busy)).status, 429);
+  });
+
+  test("a requested city with enough events goes live: listed, searchable, with a feed", async () => {
+    await db.collection("cityRequests").updateOne({ _id: "abeokuta-ng" as never }, { $set: { status: "active", eventCount: 12 } });
+    await db.collection<EventDoc>("events").insertOne(eventDoc("evt_00000000000000aa", { city: "abeokuta-ng", url: "https://allevents.in/abeokuta/x" }));
+    forgetLiveCities();
+    const { cities } = (await (await citiesFn(get("/api/cities"), ctx())).json()) as CitiesResponse;
+    const abeokuta = cities.find((c) => c.slug === "abeokuta-ng");
+    assert.deepEqual([abeokuta?.name, abeokuta?.currency, abeokuta?.count], ["Abeokuta", "NGN", 1]);
+    assert.equal((await search("abeo"))[0].city, "abeokuta-ng");
+    const feed = (await (await eventsFn(get("/api/events?city=abeokuta-ng"), ctx())).json()) as EventsResponse;
+    assert.deepEqual(feed.events.map((e) => e.id), ["evt_00000000000000aa"]);
+  });
+
+  test("Delete my data removes the device's city requests too", async () => {
+    const res = await meFn(new Request(`${BASE}/api/me`, { method: "DELETE", headers: { "x-device-id": deviceId } }), ctx());
+    const { deleted } = (await res.json()) as { deleted: { cityRequests: number } };
+    assert.ok(deleted.cityRequests >= 3, JSON.stringify(deleted));
+    assert.equal(await db.collection("cityRequestLog").countDocuments({ deviceId }), 0);
   });
 });
