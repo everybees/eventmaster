@@ -2,10 +2,14 @@
 // Survives reloads and offline stretches; the server ignores items it already has, so resending is safe.
 // Nothing is recorded or sent until the person says yes (the first-run notice, or the switch in Saved).
 import type { Action, InteractionContext, InteractionItem } from "../../shared/types.ts";
+import { sendTally } from "./api.ts";
 import { deviceId } from "./device.ts";
 
 const QUEUE_KEY = "wpg.queue";
 const CONSENT_KEY = "wpg.consent";     // "yes" or "no"; missing: not asked yet
+const CONSENT_VERSION_KEY = "wpg.consentVersion";
+/** Raise this when the privacy notice changes what activity is collected: everyone is asked again. */
+const CONSENT_VERSION = 1;
 const OLD_OPT_OUT_KEY = "wpg.trackingOff"; // from before the question: "1" was "no"
 const BATCH = 50;        // the API's per-request limit
 const FLUSH_AT = 20;     // send early once this many are waiting
@@ -78,13 +82,16 @@ export type Consent = "yes" | "no" | null;
 /** Whether this person agreed to share their activity; null until they've been asked. */
 export function consent(): Consent {
   const value = localStorage.getItem(CONSENT_KEY);
-  if (value === "yes" || value === "no") return value;
+  const version = Number(localStorage.getItem(CONSENT_VERSION_KEY) ?? 1); // answers from before versions were version 1
+  if (value === "yes" || value === "no") return version === CONSENT_VERSION ? value : null;
   return localStorage.getItem(OLD_OPT_OUT_KEY) === "1" ? "no" : null;
 }
 
 export function setConsent(yes: boolean): void {
   localStorage.setItem(CONSENT_KEY, yes ? "yes" : "no");
+  localStorage.setItem(CONSENT_VERSION_KEY, String(CONSENT_VERSION));
   localStorage.removeItem(OLD_OPT_OUT_KEY);
+  sendTally(yes ? "consent_yes" : "consent_no"); // counted without any ID, so "no" is counted too
   if (yes) {
     void flush();
   } else {

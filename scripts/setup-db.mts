@@ -6,7 +6,7 @@ import { setupIndexes } from "../netlify/lib/indexes.mts";
 
 const db = await getDb();
 await setupIndexes(db);
-for (const name of ["events", "interactions", "userEventState", "runs", "places", "cityRequests", "cityRequestLog"]) {
+for (const name of ["events", "interactions", "userEventState", "runs", "places", "cityRequests", "cityRequestLog", "eventStats"]) {
   const indexes = await db.collection(name).indexes();
   console.log(`${name}: ${indexes.map((i) => i.name).join(", ")}`);
 }

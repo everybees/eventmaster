@@ -1,6 +1,6 @@
 import {
-  ACTIONS, SWIPE_STATES, VIAS,
-  type Action, type InteractionContext, type SwipeState, type Via,
+  ACTIONS, ANSWERS, RATINGS, SWIPE_STATES, VIAS,
+  type Action, type Answer, type InteractionContext, type Rating, type SwipeState, type Via,
 } from "../../shared/types.ts";
 import { EVENT_ID, UUID } from "./http.mts";
 
@@ -42,7 +42,10 @@ function parseItem(raw: unknown, now: Date): Item | null {
   const when = typeof at === "string" ? new Date(at) : null;
   if (!when || Number.isNaN(when.getTime())) return null;
   if (when.getTime() < now.getTime() - MAX_AGE_MS || when.getTime() > now.getTime() + MAX_FUTURE_MS) return null;
-  return { id: id.toLowerCase(), eventId, action, at: when, context: parseContext(context, action) };
+  const ctx = parseContext(context, action);
+  // an answer or a rating without its value says nothing
+  if ((action === "attended" && !ctx.answer) || (action === "rated" && !ctx.rating)) return null;
+  return { id: id.toLowerCase(), eventId, action, at: when, context: ctx };
 }
 
 function parseContext(raw: unknown, action: Action): InteractionContext {
@@ -54,10 +57,13 @@ function parseContext(raw: unknown, action: Action): InteractionContext {
   }
   if (typeof raw.filter === "string" && raw.filter.length <= 60) ctx.filter = raw.filter;
   if (action === "undo") ctx.restoredState = oneOf<SwipeState>(SWIPE_STATES, raw.restoredState) ? raw.restoredState : null;
+  if (action === "attended" && oneOf<Answer>(ANSWERS, raw.answer)) ctx.answer = raw.answer;
+  if (action === "rated" && oneOf<Rating>(RATINGS, raw.rating)) ctx.rating = raw.rating;
   return ctx;
 }
 
-/** The state an action leaves an event in, or undefined if it doesn't change it (view, share, …). */
+/** The state an action leaves an event in, or undefined if it doesn't change it (view, share, going, …).
+ *  Going implies saved: the app sends a "save" too when the event wasn't saved yet. */
 export function nextState(item: Item): SwipeState | null | undefined {
   switch (item.action) {
     case "save": return "saved";

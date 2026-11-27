@@ -4,7 +4,8 @@ import type { EventsResponse } from "../../shared/types.ts";
 import { cityFilter, DEFAULT_CITY, liveCities } from "../lib/cities.mts";
 import { getDb } from "../lib/db.mts";
 import { error, FEED_CACHE, handler, json } from "../lib/http.mts";
-import { soonestShowtimes, toApiEvent, todayIn, type EventDoc } from "../lib/models.mts";
+import { soonestShowtimes, toApiEvent, todayIn, withoutReplacedFilms, type EventDoc } from "../lib/models.mts";
+import { popularityFor } from "../lib/stats.mts";
 
 const DEFAULT_LIMIT = 300;
 const MAX_LIMIT = 500;
@@ -38,9 +39,13 @@ export default handler(async (req) => {
   if (tag) filter.tags = tag;
   const limit = Math.min(Math.max(Number.parseInt(q.get("limit") ?? "", 10) || DEFAULT_LIMIT, 1), MAX_LIMIT);
 
-  const docs = await db.collection<EventDoc>("events").find(filter).sort({ start: 1, _id: 1 }).limit(limit).toArray();
+  const docs = withoutReplacedFilms(
+    await db.collection<EventDoc>("events").find(filter).sort({ start: 1, _id: 1 }).limit(limit).toArray());
   const today = todayIn(info.timezone, now);
-  const events = docs.map(toApiEvent).map((e) => (e.showtimes.length ? { ...e, showtimes: soonestShowtimes(e.showtimes, today) } : e));
+  const popularity = await popularityFor(db, docs.map((d) => d._id));
+  const events = docs
+    .map((d) => toApiEvent(d, popularity.get(d._id) ?? null))
+    .map((e) => (e.showtimes.length ? { ...e, showtimes: soonestShowtimes(e.showtimes, today) } : e));
   const body: EventsResponse = { city, generatedAt: now.toISOString(), count: docs.length, events };
   return json(body, { headers: FEED_CACHE });
 });

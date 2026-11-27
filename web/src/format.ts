@@ -87,29 +87,37 @@ export function mapsUrl(place: string, city: string): string {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
 }
 
-/** The map link for an event's venue, or null: no venue, online, or a film at several cinemas (each cinema gets its own). */
+/** A cinema whose times stay on its own site (Filmhouse): no times, a link to them. */
+export const timesElsewhere = (s: Showtime) => !s.times.length && Boolean(s.url);
+
+/** The map link for an event's venue, or null: no venue, online, or a film at several cinemas (each cinema gets
+ *  its own) or at a chain's cinemas. */
 export function venueMapUrl(e: ApiEvent): string | null {
   const { name, address } = e.venue;
   if ((!name && !address) || NO_PLACE_RE.test(name.trim())) return null;
-  if (new Set(e.showtimes.map((s) => s.cinema)).size > 1) return null;
+  if (new Set(e.showtimes.map((s) => s.cinema)).size > 1 || e.showtimes.some(timesElsewhere)) return null;
   return mapsUrl([name, address].filter(Boolean).join(", "), cityName(e.city));
 }
 
-export const tagText = (e: ApiEvent) => e.tags.map((t) => TAG_LABELS[t] ?? t).join(" · ");
+/** The tags' labels. "On now" only once it has begun: a film's opening week or an exhibition can be listed ahead. */
+export const tagText = (e: ApiEvent) => e.tags
+  .filter((t) => t !== "ongoing" || e.startLocal.slice(0, 10) <= todayLocal())
+  .map((t) => TAG_LABELS[t] ?? t).join(" · ");
 
-/** Each cinema's next day with showings (films only). */
+/** Each cinema's next day with showings, then the links of those whose times are on their own site (films only). */
 export function nextShowtimes(e: ApiEvent): Showtime[] {
   const today = todayLocal();
   const byCinema = new Map<string, Showtime>();
   for (const s of [...e.showtimes].sort((a, b) => a.date.localeCompare(b.date))) {
-    if (s.date >= today && !byCinema.has(s.cinema)) byCinema.set(s.cinema, s);
+    if ((s.date >= today || timesElsewhere(s)) && !byCinema.has(s.cinema)) byCinema.set(s.cinema, s);
   }
-  return [...byCinema.values()];
+  const shows = [...byCinema.values()];
+  return [...shows.filter((s) => !timesElsewhere(s)), ...shows.filter(timesElsewhere)];
 }
 
 /** The badge next to the date: films are "Now showing"; their end is only how far ahead times are posted. */
 export function untilText(e: ApiEvent): string {
-  if (e.showtimes.length) return "Now showing";
+  if (e.showtimes.length) return e.startLocal.slice(0, 10) > todayLocal() ? "" : "Now showing"; // not out yet: the date says when
   if (e.tags.includes("ongoing") && e.endLocal) {
     const d = dateParts(e.endLocal);
     return `Until ${d.mon} ${d.day}`;
@@ -117,9 +125,23 @@ export function untilText(e: ApiEvent): string {
   return "";
 }
 
+/** When an event is over: its end, else a timed event's start plus 3 hours, or the end of a date-only day. */
+export function endedAt(e: ApiEvent): number {
+  const local = e.endLocal ?? e.startLocal;
+  return Date.parse(e.end ?? e.start) + (local.length === 10 ? 24 : 3) * 3_600_000;
+}
+
+/** "Popular · 40 interested · 12 going", or "" until enough people have shown interest. */
+export function popularityText(e: ApiEvent): string {
+  const p = e.popularity; // saved copies from before popularity have none
+  if (!p) return "";
+  return [p.popular && "Popular", `${p.interested} interested`, p.going && `${p.going} going`].filter(Boolean).join(" · ");
+}
+
 /** The card's time line. */
 export function whenText(e: ApiEvent): string {
   const shows = nextShowtimes(e);
+  if (shows.length === 1 && timesElsewhere(shows[0])) return `Times on ${shows[0].cinema}’s site`;
   if (shows.length === 1) return `${dateParts(shows[0].date).wd}: ${shows[0].times.map(time12).join(", ")}`;
   if (shows.length > 1) return `Showtimes at ${shows.length} cinemas`;
   return e.times.length ? e.times.map(time12).join(", ") : "Start time on the listing";
@@ -128,6 +150,7 @@ export function whenText(e: ApiEvent): string {
 /** The details screen's time line. */
 export function timeLine(e: ApiEvent): string {
   const shows = nextShowtimes(e);
+  if (shows.length === 1 && timesElsewhere(shows[0])) return `Times and tickets on ${shows[0].cinema}’s site, linked below`;
   if (shows.length) return `Showtimes at ${shows.length} ${shows.length === 1 ? "cinema" : "cinemas"}, listed below`;
   const parts = [e.times.length ? e.times.map(time12).join(", ") : "Start time on the listing"];
   if (e.tags.includes("ongoing") && e.endLocal) parts.push(`runs until ${dateParts(e.endLocal).long}`);

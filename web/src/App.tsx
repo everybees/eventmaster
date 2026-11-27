@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { Action, ApiEvent, City, SwipeState, Via } from "../../shared/types.ts";
-import { deleteMyData, downloadMyData, fetchCities, fetchEvents } from "./api.ts";
+import type { Action, Answer, ApiEvent, City, Rating, SwipeState, Via } from "../../shared/types.ts";
+import { deleteMyData, downloadMyData, fetchCities, fetchEvent, fetchEvents } from "./api.ts";
 import { CATEGORY_ORDER, styleFor } from "./categories.ts";
 import {
   cachedCities, cityName, forgetRequest, rememberCities, rememberRequest, requestedCities, saveCity, savedCity,
@@ -9,12 +9,19 @@ import { CardStack, type Decision, type StackHandle } from "./components/CardSta
 import { CityPicker } from "./components/CityPicker.tsx";
 import { Details } from "./components/Details.tsx";
 import {
-  IconBookmark, IconChevronDown, IconClock, IconCompass, IconInfo, IconRefresh, IconUndo, IconX,
+  IconBookmark, IconChevronDown, IconClock, IconCompass, IconInfo, IconPlus, IconRefresh, IconUndo, IconX,
 } from "./components/icons.tsx";
 import { ConsentBanner, PrivacyNotice } from "./components/Privacy.tsx";
-import { Saved } from "./components/Saved.tsx";
+import { InstallPrompt, RemindersPrompt } from "./components/Prompts.tsx";
+import { Saved, upcoming } from "./components/Saved.tsx";
+import { linkIn, SuggestSheet } from "./components/Suggest.tsx";
 import { resetDeviceId } from "./device.ts";
 import { ALL, countByCategory, inCategory, remaining } from "./feed.ts";
+import { dismissInstall, installDismissed, promptInstall, useInstallWay } from "./install.ts";
+import {
+  declineReminders, reminderPref, reminderSupport, remindable, remindersAvailable, syncReminders, turnOffReminders,
+  turnOnReminders,
+} from "./reminders.ts";
 import { useSwipeStore } from "./store.ts";
 import { clearQueue, consent, setConsent, track, type Consent } from "./track.ts";
 
@@ -22,6 +29,14 @@ const STATE_FOR: Record<Decision, SwipeState> = { save: "saved", pass: "passed",
 const VERB: Record<Decision, string> = { save: "Saved", pass: "Passed on", later: "Moved to the back:" };
 const HINT = "Drag the card: ← pass · save → · ↑ details · ↓ later";
 const KEYS: Record<string, Decision | undefined> = { ArrowLeft: "pass", ArrowRight: "save", ArrowDown: "later" };
+const SHARED = ["share_url", "share_text", "share_title"]; // the manifest's share_target (vite.config.ts)
+
+/** A link another app shared to this one (Android's share sheet), to suggest as an event. */
+function sharedLink(): { link: string } | null {
+  const q = new URLSearchParams(location.search);
+  if (!SHARED.some((k) => q.has(k))) return null;
+  return { link: linkIn(SHARED.map((k) => q.get(k) ?? "").join(" ")) };
+}
 
 export function App() {
   const [city, setCity] = useState<string | null>(savedCity);
@@ -37,6 +52,13 @@ export function App() {
   const [toast, setToast] = useState("");
   const [sharing, setSharing] = useState<Consent>(consent);
   const [privacyOpen, setPrivacyOpen] = useState(() => location.pathname.replace(/\/$/, "") === "/privacy");
+  const [suggesting, setSuggesting] = useState(sharedLink);
+  const [remindersOn, setRemindersOn] = useState(() => reminderPref());
+  const [canRemind, setCanRemind] = useState(false); // the server sends reminders
+  const [installOff, setInstallOff] = useState(installDismissed);
+  const installWay = useInstallWay();
+  const support = useMemo(reminderSupport, []);
+  useEffect(() => { void remindersAvailable().then(setCanRemind); }, []);
   const stack = useRef<StackHandle>(null);
   const toastTimer = useRef(0);
   const lastViewed = useRef("");
@@ -90,6 +112,31 @@ export function App() {
     return Object.values(store.saved).map((e) => fresh.get(e.id) ?? e);
   }, [events, store.saved]);
 
+  // reminders follow the saved events still ahead
+  const ahead = useMemo(() => upcoming(savedEvents), [savedEvents]);
+  const aheadIds = ahead.map((e) => e.id).sort().join(",");
+  useEffect(() => {
+    if (remindersOn === "on") void syncReminders(aheadIds ? aheadIds.split(",") : []).catch(() => {});
+  }, [aheadIds, remindersOn]);
+
+  // a shared link opened the suggestion sheet: tidy the address
+  useEffect(() => {
+    if (SHARED.some((k) => new URLSearchParams(location.search).has(k))) history.replaceState(null, "", "/");
+  }, []);
+
+  // a reminder's link: /?event=evt_…&from=reminder opens that event
+  useEffect(() => {
+    const q = new URLSearchParams(location.search);
+    const id = q.get("event");
+    if (!id) return;
+    history.replaceState(null, "", "/");
+    const via: Via = q.get("from") === "reminder" ? "reminder" : "tap";
+    fetchEvent(id).then(
+      (e) => { setOpen(e); track("details", e.id, { via }); },
+      (err: Error) => say(err.message),
+    );
+  }, []);
+
   // one "view" each time a new card reaches the top of the stack
   useEffect(() => {
     if (top && tab === "discover" && top.id !== lastViewed.current) {
@@ -124,6 +171,58 @@ export function App() {
     track("details", event.id, { via, filter: category });
   }
 
+  // a suggestion that's already in the app: "Open it"
+  function openSuggested(id: string) {
+    setSuggesting(null);
+    const loaded = events?.find((e) => e.id === id);
+    if (loaded) openDetails(loaded, "tap");
+    else fetchEvent(id).then((e) => openDetails(e, "tap"), (err: Error) => say(err.message));
+  }
+
+  function setGoing(event: ApiEvent, on: boolean) {
+    const wasSaved = store.states[event.id] === "saved";
+    dispatch({ type: "going", event, on });
+    if (on && !wasSaved) track("save", event.id, { via: "button", filter: category });
+    track(on ? "going" : "not_going", event.id, { via: "button" });
+    say(on ? `Going to ${event.title}` : `Not going to ${event.title}`);
+  }
+
+  function answer(event: ApiEvent, value: Answer) {
+    dispatch({ type: "answer", id: event.id, answer: value });
+    track("attended", event.id, { via: "list", answer: value });
+    if (value !== "yes") say("Thanks");
+  }
+
+  function rate(event: ApiEvent, rating: Rating) {
+    dispatch({ type: "rate", id: event.id, rating });
+    track("rated", event.id, { via: "list", rating });
+    say("Thanks");
+  }
+
+  async function reminders(on: boolean) {
+    if (!on) {
+      await turnOffReminders();
+      setRemindersOn("off");
+      say("Reminders are off");
+      return;
+    }
+    try {
+      const result = await turnOnReminders(ahead.map((e) => e.id));
+      if (result === "on") say("Reminders are on");
+      else if (result === "denied") { declineReminders(); say("Notifications are blocked for this site in your browser’s settings"); }
+      else say("Reminders aren’t available right now");
+    } catch (err) {
+      say((err as Error).message);
+    }
+    setRemindersOn(reminderPref());
+  }
+
+  async function install(yes: boolean) {
+    if (yes) await promptInstall();
+    dismissInstall();
+    setInstallOff(true);
+  }
+
   function unsave(event: ApiEvent) {
     dispatch({ type: "unsave", id: event.id });
     track("unsave", event.id, { via: "list" });
@@ -153,6 +252,8 @@ export function App() {
     if (!window.confirm("Delete your saved events and everything this app has sent about this device?")) return;
     try {
       await deleteMyData();
+      if (remindersOn === "on") await turnOffReminders().catch(() => {});
+      setRemindersOn(reminderPref());
       clearQueue();
       resetDeviceId();
       dispatch({ type: "clear" });
@@ -165,7 +266,8 @@ export function App() {
   // arrow keys on a keyboard do what the swipes do
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (tab !== "discover" || open || picking || privacyOpen || e.target instanceof HTMLInputElement) return;
+      if (tab !== "discover" || open || picking || privacyOpen || suggesting) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
       const decision = KEYS[e.key];
       if (decision) stack.current?.fling(decision);
       else if (e.key === "ArrowUp" && top) openDetails(top, "button");
@@ -175,6 +277,17 @@ export function App() {
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
   });
+
+  // one card at a time at the top of Discover: the consent question first, then reminders, then installing
+  let prompt: ReactNode = null;
+  if (city && sharing === null) {
+    prompt = <ConsentBanner onAnswer={answerConsent} onReadMore={() => setPrivacyOpen(true)} />;
+  } else if (city && remindersOn === null && support === "yes" && canRemind && ahead.some(remindable)) {
+    prompt = <RemindersPrompt onYes={() => void reminders(true)} onNo={() => { declineReminders(); setRemindersOn("off"); }} />;
+  } else if (city && installWay && !installOff
+    && (ahead.length >= 3 || (installWay === "ios" && canRemind && ahead.some(remindable)))) {
+    prompt = <InstallPrompt way={installWay} onYes={() => void install(true)} onNo={() => void install(false)} />;
+  }
 
   const chips = [ALL, ...CATEGORY_ORDER.filter((c) => counts.get(c) || c === category)];
   const noCards = !top;
@@ -196,7 +309,7 @@ export function App() {
   } else if (!events) {
     body = <div className="message"><p>Loading events…</p></div>;
   } else if (events.length === 0) {
-    body = <NoEvents onReload={load} />;
+    body = <NoEvents onReload={load} onSuggest={() => setSuggesting({ link: "" })} />;
   } else if (top) {
     body = <CardStack ref={stack} events={visible.slice(0, 3)} onDecide={decide} onOpen={openDetails} />;
   } else {
@@ -206,6 +319,7 @@ export function App() {
         hasSaved={savedEvents.length > 0}
         onBrowseAll={category !== ALL && queue.length > 0 ? () => setCategory(ALL) : undefined}
         onRestart={Object.values(store.states).some((s) => s !== "saved") ? () => dispatch({ type: "restart" }) : undefined}
+        onSuggest={() => setSuggesting({ link: "" })}
       />
     );
   }
@@ -223,10 +337,14 @@ export function App() {
               </h1>
               <p className="subtitle">{!city ? "" : events ? `This month · ${queue.length} events to go` : "Loading…"}</p>
             </div>
-            <button type="button" className="icon-btn" aria-label="Reload events" onClick={load} disabled={!city}><IconRefresh /></button>
+            <div className="header-actions">
+              <button type="button" className="icon-btn" aria-label="Suggest an event" aria-haspopup="dialog"
+                onClick={() => setSuggesting({ link: "" })} disabled={!city}><IconPlus /></button>
+              <button type="button" className="icon-btn" aria-label="Reload events" onClick={load} disabled={!city}><IconRefresh /></button>
+            </div>
           </header>
-          {city && sharing === null && <ConsentBanner onAnswer={answerConsent} onReadMore={() => setPrivacyOpen(true)} />}
-          {ready && (
+          {prompt}
+          {ready && !prompt && (
             <div className="ready-banner" role="status">
               <span>Events for {ready.name} are ready.</span>
               <button type="button" className="bar-btn primary" onClick={() => pickCity(ready.slug)}>Switch</button>
@@ -259,9 +377,15 @@ export function App() {
       ) : (
         <Saved
           events={savedEvents}
+          going={store.going}
+          answers={store.answers}
           sharing={sharing === "yes"}
+          reminders={{ on: remindersOn === "on", support, available: canRemind }}
           onOpen={(e) => openDetails(e, "list")}
           onRemove={unsave}
+          onAnswer={answer}
+          onRate={rate}
+          onRemindersChange={(on) => void reminders(on)}
           onSharingChange={answerConsent}
           onPrivacy={() => setPrivacyOpen(true)}
           onDownloadData={downloadData}
@@ -269,12 +393,14 @@ export function App() {
         />
       )}
 
+      {tab === "saved" && toast && <p className="toast" role="status">{toast}</p>}
+
       <nav className="tabbar" aria-label="Sections">
         <button type="button" className="tab" aria-current={tab === "discover" ? "page" : undefined} onClick={() => setTab("discover")}>
           <IconCompass size={22} /><span>Discover</span>
         </button>
         <button type="button" className="tab" aria-current={tab === "saved" ? "page" : undefined} onClick={() => setTab("saved")}>
-          <IconBookmark size={22} /><span>Saved · {savedEvents.length}</span>
+          <IconBookmark size={22} /><span>Saved · {ahead.length}</span>
         </button>
       </nav>
 
@@ -293,11 +419,18 @@ export function App() {
         <Details
           event={open}
           state={store.states[open.id]}
+          going={Boolean(store.going[open.id])}
+          onGoing={(on) => setGoing(open, on)}
           onClose={() => setOpen(null)}
           onDecide={(d) => { decide(open, d, "button"); setOpen(null); }}
           onUnsave={() => { unsave(open); setOpen(null); }}
           onTrack={(action: Action) => track(action, open.id, { via: "button" })}
         />
+      )}
+
+      {suggesting && city && !picking && !privacyOpen && (
+        <SuggestSheet cities={cities} city={city} link={suggesting.link} onOpenEvent={openSuggested}
+          onClose={() => setSuggesting(null)} />
       )}
 
       {privacyOpen && <PrivacyNotice onClose={closePrivacy} />}
@@ -306,7 +439,7 @@ export function App() {
 }
 
 /** The server has no events at all (as opposed to: you've swiped through them). */
-function NoEvents({ onReload }: { onReload(): void }) {
+function NoEvents({ onReload, onSuggest }: { onReload(): void; onSuggest(): void }) {
   return (
     <div className="stack">
       <div className="empty">
@@ -319,14 +452,15 @@ function NoEvents({ onReload }: { onReload(): void }) {
         <div className="empty-actions">
           <button type="button" className="bar-btn" onClick={onReload}>Reload</button>
         </div>
+        <SuggestLink onClick={onSuggest} />
       </div>
     </div>
   );
 }
 
 /** You've swiped through everything (in this category). */
-function EmptyState({ category, hasSaved, onBrowseAll, onRestart }: {
-  category: string; hasSaved: boolean; onBrowseAll?: () => void; onRestart?: () => void;
+function EmptyState({ category, hasSaved, onBrowseAll, onRestart, onSuggest }: {
+  category: string; hasSaved: boolean; onBrowseAll?: () => void; onRestart?: () => void; onSuggest(): void;
 }) {
   let note = "Check back soon for more.";
   if (onRestart) note = "Start over to see the events you passed again.";
@@ -340,8 +474,17 @@ function EmptyState({ category, hasSaved, onBrowseAll, onRestart }: {
           {onBrowseAll && <button type="button" className="bar-btn primary" onClick={onBrowseAll}>Browse all</button>}
           {onRestart && <button type="button" className="bar-btn" onClick={onRestart}>Start over</button>}
         </div>
+        <SuggestLink onClick={onSuggest} />
       </div>
     </div>
+  );
+}
+
+function SuggestLink({ onClick }: { onClick(): void }) {
+  return (
+    <button type="button" className="text-btn plain suggest-link" aria-haspopup="dialog" onClick={onClick}>
+      Know of something that isn’t here? Suggest it
+    </button>
   );
 }
 

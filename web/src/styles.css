@@ -82,6 +82,8 @@ h1, h2, h3, p { margin: 0; }
   cursor: pointer;
 }
 .city-btn svg { flex: none; translate: 0 2px; }
+.header-actions { flex: none; display: flex; gap: 8px; }
+.icon-btn:disabled { cursor: default; opacity: 0.5; }
 .icon-btn {
   flex: none;
   display: grid;
@@ -392,6 +394,8 @@ h1, h2, h3, p { margin: 0; }
 }
 .show a.time-chip { background: var(--sticker); box-shadow: 2px 2px 0 var(--ink); }
 .show .time-chip.off { border-color: var(--divider); color: var(--muted); }
+.show .time-chip.out { gap: 6px; }
+.show-cinema.plain { text-decoration: none; }
 .fine.left { margin-bottom: 4px; text-align: left; }
 .about { font-size: 15px; line-height: 1.5; color: var(--text-2); }
 .links { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -481,11 +485,11 @@ h1, h2, h3, p { margin: 0; }
 .privacy-links { display: flex; flex-wrap: wrap; column-gap: 20px; }
 
 /* ---------- privacy: the first-run question and the notice ---------- */
-.consent { flex: none; display: flex; flex-direction: column; gap: 8px; margin: 8px 16px 0 20px; padding: 14px; border: var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); font-size: 14px; line-height: 1.45; }
-.consent h2 { font-family: var(--display); font-size: 18px; font-weight: 800; letter-spacing: -0.01em; }
-.consent p { color: var(--text-2); }
-.consent-actions { display: flex; gap: 10px; }
-.consent-actions .bar-btn { flex: 1; height: 42px; }
+.prompt { flex: none; display: flex; flex-direction: column; gap: 8px; margin: 8px 16px 0 20px; padding: 14px; border: var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); font-size: 14px; line-height: 1.45; }
+.prompt h2 { font-family: var(--display); font-size: 18px; font-weight: 800; letter-spacing: -0.01em; }
+.prompt p { color: var(--text-2); }
+.prompt-actions { display: flex; gap: 10px; }
+.prompt-actions .bar-btn { flex: 1; height: 42px; }
 .inline-link { padding: 0; border: 0; background: none; font-weight: 700; text-decoration: underline; cursor: pointer; }
 .notice .sheet-body { gap: 12px; font-size: 14px; line-height: 1.5; color: var(--text-2); }
 .notice section { display: flex; flex-direction: column; gap: 8px; }
@@ -575,7 +579,45 @@ h1, h2, h3, p { margin: 0; }
 .city-option:disabled { cursor: progress; opacity: 0.7; }
 .outcome { display: flex; flex-direction: column; gap: 10px; padding: 14px; border: var(--line); border-radius: 14px; background: var(--bg); }
 .outcome p { font-size: 15px; font-weight: 600; line-height: 1.45; }
+.outcome .bar-btn, .suggest-form .bar-btn { flex: none; } /* full height: flex: 1 in a column would squash them */
 .ready-banner { flex: none; display: flex; align-items: center; gap: 10px; margin: 8px 16px 0 20px; padding: 8px 8px 8px 14px; border: var(--line); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); font-size: 14px; font-weight: 700; }
 .ready-banner span { flex: 1; }
 .ready-banner .bar-btn { flex: none; height: 40px; padding: 0 14px; }
 .ready-banner .icon-btn { width: 40px; height: 40px; box-shadow: none; }
+
+/* ---------- going, popularity, "Did you go?" ---------- */
+.pill.pop { background: var(--details); color: var(--ink); font-size: 12px; font-weight: 700; letter-spacing: 0; text-transform: none; }
+.pop-line { margin-top: 8px; font-size: 14px; font-weight: 700; color: var(--text-2); }
+.bar-btn.going { background: var(--bg); }
+.bottom-bar .bar-btn { padding: 0 12px; }
+.going-tag { margin-right: 6px; padding: 1px 6px; border: 1.5px solid var(--ink); border-radius: 6px; background: var(--bg); color: var(--ink); font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; }
+.ask-list { display: flex; flex-direction: column; gap: 10px; margin: 4px 20px 16px 16px; }
+.ask-list .saved-city { margin: 8px 0 0; }
+.ask { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin: 0; padding: 14px; border: var(--line); border-radius: 16px; background: var(--surface); box-shadow: 4px 4px 0 var(--ink); }
+.ask-title { float: left; width: 100%; padding: 0; font-size: 15px; font-weight: 700; line-height: 1.3; }
+.ask-meta { clear: both; font-size: 13px; color: var(--muted); }
+.ask-actions { clear: both; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.ask-actions .bar-btn { flex: 1 1 auto; height: 40px; padding: 0 12px; font-size: 14px; box-shadow: 2px 2px 0 var(--ink); }
+
+/* messages on the Saved tab (Discover shows them in its hint line) */
+.toast { position: absolute; left: 16px; right: 16px; bottom: calc(96px + env(safe-area-inset-bottom)); z-index: 5; margin: 0; padding: 12px 14px; border: var(--line); border-radius: 14px; background: var(--ink); color: var(--surface); box-shadow: var(--shadow); font-size: 14px; font-weight: 700; text-align: center; }
+
+/* ---------- suggest an event ---------- */
+.suggest-form { display: flex; flex-direction: column; gap: 14px; }
+.field { display: flex; flex-direction: column; gap: 6px; font-size: 14px; font-weight: 700; }
+.field small { font-size: 13px; font-weight: 500; color: var(--muted); }
+.field input, .field select, .field textarea {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px; /* 16px+: iPhone doesn't zoom in on focus */
+  font-weight: 500;
+}
+.field textarea { resize: vertical; line-height: 1.4; }
+.sheet-note.problem { color: var(--danger); font-weight: 600; }
+.suggest-link { align-self: center; margin-top: 2px; }

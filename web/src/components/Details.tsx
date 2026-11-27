@@ -3,16 +3,21 @@ import type { Action, ApiEvent, SwipeState, Tickets } from "../../../shared/type
 import { styleFor } from "../categories.ts";
 import { cityName } from "../city.ts";
 import {
-  dateParts, downloadIcs, mapsUrl, nextShowtimes, priceNote, priceText, shareEvent, shortSource, tagText, time12, timeLine,
-  venueMapUrl,
+  dateParts, downloadIcs, mapsUrl, nextShowtimes, popularityText, priceNote, priceText, shareEvent, shortSource, tagText,
+  timesElsewhere,
+  time12, timeLine, venueMapUrl,
 } from "../format.ts";
 import type { Decision } from "./CardStack.tsx";
 import { EventMedia } from "./EventMedia.tsx";
-import { IconArrowLeft, IconBookmark, IconCalendar, IconExternal, IconPin, IconShare, IconTicket, IconX } from "./icons.tsx";
+import {
+  IconArrowLeft, IconBookmark, IconCalendar, IconCheck, IconExternal, IconPin, IconShare, IconTicket, IconX,
+} from "./icons.tsx";
 
 interface Props {
   event: ApiEvent;
   state: SwipeState | undefined;
+  going: boolean;
+  onGoing(on: boolean): void;
   onClose(): void;
   onDecide(decision: Exclude<Decision, "later">): void;
   onUnsave(): void;
@@ -58,13 +63,14 @@ function buyLink(event: ApiEvent, source: string): (Tickets & { label: string })
   return null;
 }
 
-export function Details({ event, state, onClose, onDecide, onUnsave, onTrack }: Props) {
+export function Details({ event, state, going, onGoing, onClose, onDecide, onUnsave, onTrack }: Props) {
   const style = styleFor(event.category);
   const tags = tagText(event);
   const shows = nextShowtimes(event);
   const source = shortSource(event.source);
   const buy = buyLink(event, source);
   const venueMap = venueMapUrl(event);
+  const popularity = popularityText(event);
   // a native modal: Escape closes it, focus stays inside, and the feed behind is inert
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
@@ -88,6 +94,7 @@ export function Details({ event, state, onClose, onDecide, onUnsave, onTrack }: 
             {tags && <span className="pill plain">{tags}</span>}
           </div>
           <h2 id="details-title">{event.title}</h2>
+          {popularity && <p className="pop-line">{popularity}</p>}
         </div>
         <div className="rows">
           <Row icon={<IconCalendar size={18} />} title={dateParts(event.startLocal).long} sub={timeLine(event)} />
@@ -108,7 +115,19 @@ export function Details({ event, state, onClose, onDecide, onUnsave, onTrack }: 
             <div className="section">
               <h3>Showtimes</h3>
               {shows.some((s) => s.tickets?.some(Boolean)) && <p className="fine left">Tap a time to buy tickets.</p>}
-              {shows.map((s) => (
+              {shows.map((s) => timesElsewhere(s) ? (
+                // a chain that keeps its times on its own site (Filmhouse): which of its cinemas, and when, is there
+                <div className="show" key={s.cinema}>
+                  <div className="show-cinema plain"><strong>{s.cinema}</strong></div>
+                  {s.address && <span>{s.address}</span>}
+                  <div className="show-times">
+                    <a className="time-chip out" href={s.url} target="_blank" rel="noopener noreferrer"
+                      aria-label={`Times and tickets at ${s.cinema}, on its site`} onClick={() => onTrack("tickets")}>
+                      Times and tickets <IconExternal size={14} />
+                    </a>
+                  </div>
+                </div>
+              ) : (
                 <div className="show" key={s.cinema}>
                   <a className="show-cinema" href={mapsUrl([s.cinema, s.address].filter(Boolean).join(", "), cityName(event.city))}
                     target="_blank" rel="noopener noreferrer" aria-label={`${s.cinema}: open in Google Maps`}
@@ -156,11 +175,18 @@ export function Details({ event, state, onClose, onDecide, onUnsave, onTrack }: 
       </div>
       <div className="bottom-bar">
         {state === "saved" ? (
-          <button type="button" className="bar-btn" onClick={onUnsave}>Remove from saved</button>
+          <>
+            <button type="button" className="bar-btn" onClick={onUnsave}>Remove</button>
+            <button type="button" className={going ? "bar-btn going" : "bar-btn primary"} aria-pressed={going}
+              onClick={() => onGoing(!going)}>
+              {going ? <><IconCheck /> Going</> : "I’m going"}
+            </button>
+          </>
         ) : (
           <>
             <button type="button" className="bar-btn" onClick={() => onDecide("pass")}><IconX /> Pass</button>
             <button type="button" className="bar-btn primary" onClick={() => onDecide("save")}><IconBookmark /> Save</button>
+            <button type="button" className="bar-btn" aria-pressed={false} onClick={() => onGoing(true)}>Going</button>
           </>
         )}
       </div>

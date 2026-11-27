@@ -1,5 +1,5 @@
 import { useEffect, useReducer } from "react";
-import type { ApiEvent, SwipeState } from "../../shared/types.ts";
+import type { Answer, ApiEvent, Rating, SwipeState } from "../../shared/types.ts";
 
 const KEY = "wpg.swipes.v1";
 const MAX_HISTORY = 50;
@@ -18,6 +18,9 @@ export interface SwipeStore {
   laterAt: Record<string, number>;  // when each event was sent to the back of the queue
   saved: Record<string, ApiEvent>;  // a copy, so saved events still show after they leave the feed
   history: Step[];
+  going: Record<string, true>;        // "I'm going" (always saved too)
+  answers: Record<string, Answer>;    // "Did you go?"
+  ratings: Record<string, Rating>;
 }
 
 export type StoreAction =
@@ -25,9 +28,18 @@ export type StoreAction =
   | { type: "undo" }
   | { type: "unsave"; id: string }
   | { type: "restart" } // bring passed and later events back; keep saved ones
+  | { type: "going"; event: ApiEvent; on: boolean }
+  | { type: "answer"; id: string; answer: Answer }
+  | { type: "rate"; id: string; rating: Rating }
   | { type: "clear" };
 
-const empty = (): SwipeStore => ({ states: {}, laterAt: {}, saved: {}, history: [] });
+const empty = (): SwipeStore => ({ states: {}, laterAt: {}, saved: {}, history: [], going: {}, answers: {}, ratings: {} });
+
+const without = <T,>(record: Record<string, T>, id: string): Record<string, T> => {
+  const copy = { ...record };
+  delete copy[id];
+  return copy;
+};
 
 function reducer(s: SwipeStore, a: StoreAction): SwipeStore {
   switch (a.type) {
@@ -39,7 +51,8 @@ function reducer(s: SwipeStore, a: StoreAction): SwipeStore {
       const saved = { ...s.saved };
       if (a.next === "saved") saved[id] = a.event;
       else delete saved[id];
-      return { states: { ...s.states, [id]: a.next }, laterAt, saved, history: [...s.history, step].slice(-MAX_HISTORY) };
+      const going = a.next === "saved" ? s.going : without(s.going, id);
+      return { ...s, states: { ...s.states, [id]: a.next }, laterAt, saved, going, history: [...s.history, step].slice(-MAX_HISTORY) };
     }
     case "undo": {
       const step = s.history.at(-1);
@@ -54,15 +67,24 @@ function reducer(s: SwipeStore, a: StoreAction): SwipeStore {
       const saved = { ...s.saved };
       if (step.prev === "saved") saved[id] = step.event;
       else delete saved[id];
-      return { states, laterAt, saved, history: s.history.slice(0, -1) };
+      return { ...s, states, laterAt, saved, history: s.history.slice(0, -1) };
     }
     case "unsave": {
       const states = { ...s.states };
       const saved = { ...s.saved };
       delete states[a.id];
       delete saved[a.id];
-      return { ...s, states, saved, history: s.history.filter((h) => h.event.id !== a.id) };
+      return { ...s, states, saved, going: without(s.going, a.id), history: s.history.filter((h) => h.event.id !== a.id) };
     }
+    case "going": {
+      const id = a.event.id;
+      if (!a.on) return { ...s, going: without(s.going, id) };
+      return { ...s, states: { ...s.states, [id]: "saved" }, saved: { ...s.saved, [id]: s.saved[id] ?? a.event }, going: { ...s.going, [id]: true } };
+    }
+    case "answer":
+      return { ...s, answers: { ...s.answers, [a.id]: a.answer } };
+    case "rate":
+      return { ...s, ratings: { ...s.ratings, [a.id]: a.rating } };
     case "restart":
       return { ...s, states: Object.fromEntries(Object.entries(s.states).filter(([, v]) => v === "saved")), laterAt: {}, history: [] };
     case "clear":

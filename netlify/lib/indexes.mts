@@ -2,7 +2,7 @@ import { MongoServerError, type Db } from "mongodb";
 
 /**
  * Creates every index the app relies on. Safe to run again; existing indexes are left alone.
- * People's data (interactions, saved states, city requests) has no expiry: it's kept until they delete it.
+ * People's data (interactions, saved states, city requests, suggestions) has no expiry: it's kept until they delete it.
  */
 export async function setupIndexes(db: Db): Promise<void> {
   await db.collection("events").createIndexes([
@@ -30,7 +30,15 @@ export async function setupIndexes(db: Db): Promise<void> {
   await db.collection("cityRequestLog").createIndexes([
     { key: { deviceId: 1, at: -1 }, name: "by_device" },
   ]);
+  // "Suggest an event": one per device and link; crawler/suggestions.py lists the new ones
+  await db.collection("suggestions").createIndexes([
+    { key: { deviceId: 1, url: 1 }, name: "by_device", unique: true },
+    { key: { status: 1, at: 1 }, name: "to_review" },
+  ]);
   await db.collection("runs").createIndexes([{ key: { startedAt: -1 }, name: "recent" }]);
+  // the hourly popularity job's output (by event _id); this one is for looking at a city's top events
+  await db.collection("eventStats").createIndexes([{ key: { city: 1, score: -1 }, name: "by_city" }]);
+  // `reminders` (by device _id) and `tallies` (by day _id) need no other index
   // these deleted interactions after ~18 months and the city request log after 90 days, before data was kept
   await dropIndex(db, "interactions", "expire");
   await dropIndex(db, "cityRequestLog", "expire");

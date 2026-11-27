@@ -149,6 +149,7 @@
     "crawl": {
       "eventbrite": "canada--kitchener",
       "allevents": "kitchener",
+      "towns": ["Kitchener", "Waterloo", "Cambridge"],
       "ticketmaster": {"city": "Kitchener", "countryCode": "CA"},
       "cinemaclock": [
         "apollo-cinema", "landmark-10-waterloo", "princess-twin", "princess-cinema", "cineplex-kitchener-vip",
@@ -345,6 +346,7 @@
         {"slug": "galleria", "name": "Silverbird Galleria", "address": "Victoria Island"},
         {"slug": "ikeja", "name": "Silverbird Ikeja", "address": "Ikeja City Mall"}
       ],
+      "filmhouse": ["Circle Mall", "Ikota", "Landmark", "Lekki IMAX", "Oniru", "Palms Lekki", "Surulere"],
       "sources": {},
       "sourceVenues": {},
       "venueRules": {"Arts & Theatre": "terra kulture|\\bmuson\\b", "Music & Concerts": "afrika shrine"}

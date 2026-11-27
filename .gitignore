@@ -18,5 +18,7 @@ __pycache__/
 # crawler output when run by hand (python3 crawler/events.py)
 winnipeg_events.csv
 winnipeg_events.json
+# drafts of suggested events (python3 crawler/suggestions.py draft)
+suggestion-*.json
 
 .DS_Store

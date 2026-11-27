@@ -4,9 +4,10 @@ load_to_mongo.py — crawl one city's sources (the same crawl as events.py) and 
 
 Meant to run on a schedule, once per city (.github/workflows/crawl.yml). Each event is one document keyed
 by its stable ID, so a re-crawl updates it in place. A city's events missing from two of its healthy runs
-in a row are marked "removed". Every run writes a `runs` document with per-source counts. The script exits
-with status 2 when a source that returned events last run returns none, and 3 when the run found under
-half as many events as the city's last one, so the scheduled job fails and GitHub notifies you.
+in a row are marked "removed" (not those added by hand: crawler/suggestions.py). Every run writes a `runs`
+document with per-source counts. The script exits with status 2 when a source that returned events last run
+returns none, and 3 when the run found under half as many events as the city's last one, so the scheduled job
+fails and GitHub notifies you.
 
   MONGODB_URI=mongodb+srv://… python3 crawler/load_to_mongo.py --city calgary
   python3 crawler/load_to_mongo.py --dry-run      # crawl and print a sample; no database needed
@@ -22,12 +23,16 @@ DEFAULT_DB = "wpg_events"
 REMOVE_AFTER_MISSED_RUNS = 2
 HEALTHY_SHARE = 0.5               # a run with under half the last run's events removes nothing
 FEED_GRACE = timedelta(hours=6)   # as in events.wanted(): an event stays listed this long after it ends
+KEEP_AFTER_END = timedelta(days=30)  # and in the database this long, for "Did you go?" answers and popularity
 TICKET_RECHECK = timedelta(hours=24)  # how often an AllEvents page is fetched again for its ticket link
 SYNOPSIS_RECHECK = timedelta(days=7)  # how often a film's page is fetched again for its synopsis
 # Requested cities (the app's "add my city"): see netlify/functions/city-requests.mts
 MAX_REQUESTED_CITIES = 50  # crawled at once, most requested first; the rest wait
 MIN_EVENTS = 5             # a requested city goes live once a crawl finds at least this many events
 FAILED_SOURCE_RE = re.compile(r"^\s*! (.+?)(?::| ->) ")  # "  ! AllEvents (…): https://… -> HTTP Error 405"
+# sources with an event in a city every few weeks: a run that finds none of them there is normal, not a broken
+# source (one that fails still alerts)
+SPARSE_SOURCES = {E.BEYOND30_SOURCE}
 
 
 def to_doc(e):
@@ -71,7 +76,7 @@ def to_doc(e):
         "source": e["source"],
         "showtimes": e.get("_showtimes", []),
         "visibleUntil": (last + FEED_GRACE).astimezone(timezone.utc),
-        "expireAt": (last + timedelta(days=1)).astimezone(timezone.utc),  # TTL index deletes it then
+        "expireAt": (last + KEEP_AFTER_END).astimezone(timezone.utc),  # TTL index deletes it then
     }
     if "_ticket_checked" in e:  # only when looked up, so a run that skips the lookup keeps the last answer
         doc["ticketUrl"], doc["ticketCheckedAt"] = e["_ticket_url"] or None, e["_ticket_checked"]
@@ -99,6 +104,7 @@ def requested_city(doc):
     country = re.sub(r"[^a-z0-9]+", "-", E.norm(doc["countryName"])).strip("-")
     return {
         "name": doc["name"], "region": doc.get("region", ""), "country": doc["country"],
+        "countryName": doc.get("countryName", ""),
         "timezone": doc["timezone"], "currency": doc.get("currency") or "USD", "lat": doc["lat"], "lon": doc["lon"],
         "requested": True,
         "crawl": {
@@ -185,14 +191,16 @@ def load(db, docs, source_counts, report, run_start, city=E.DEFAULT_CITY):
     healthy = prev is None or len(docs) >= HEALTHY_SHARE * prev["total"]
     removed = 0
     if healthy:  # a crawl that mostly failed must not make everything look removed
-        db.events.update_many({**same_city, "status": "active", "lastSeen": {"$lt": run_start}},
+        # events added by hand (crawler/suggestions.py) aren't any source's, so a crawl not finding them means nothing
+        db.events.update_many({**same_city, "status": "active", "lastSeen": {"$lt": run_start},
+                               "manual": {"$ne": True}},
                               {"$inc": {"missedRuns": 1}})
         removed = db.events.update_many({**same_city, "status": "active",
                                          "missedRuns": {"$gte": REMOVE_AFTER_MISSED_RUNS}},
                                         {"$set": {"status": "removed"}}).modified_count
 
     before = {s["source"]: s["count"] for s in (prev or {}).get("sources", [])}
-    dropped = sorted(s for s, n in before.items() if n > 0 and source_counts.get(s, 0) == 0)
+    dropped = sorted(s for s, n in before.items() if n > 0 and source_counts.get(s, 0) == 0 and s not in SPARSE_SOURCES)
     # a source that errored and found nothing is broken (blocked, moved, redesigned), even if it never worked
     errored = {m.group(1) for r in report if (m := FAILED_SOURCE_RE.match(r))}
     failed = sorted(s for s in errored if source_counts.get(s, 0) == 0)

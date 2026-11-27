@@ -6,7 +6,9 @@ Cities and their sources are in shared/cities.json (Winnipeg is the default). Fo
   - AllEvents.in (aggregates many public Facebook events)
   - Eventbrite (public discovery pages), only with CRAWL_EVENTBRITE=1: it refuses data-centre addresses,
     so it works from a home connection but not from GitHub Actions
-  - Movies & film: AllEvents film pages, and CinemaClock for showtimes at the city's cinemas
+  - Movies & film: AllEvents film pages, and CinemaClock for showtimes at the city's cinemas; in Nigeria,
+    Silverbird's showtimes and the films Filmhouse is showing (its times stay on its site)
+  - Beyond 30's over-30s daytime clubbing, in whichever of its many cities it's in
   - Ticketmaster Discovery API (optional, free key: TICKETMASTER_API_KEY)
   - the city's own extra sources, e.g. Tourism Winnipeg and the Cinematheque
   - Any extra page you pass with --url (works on most sites using schema.org Event markup)
@@ -25,7 +27,7 @@ Usage:
   python3 crawler/events.py --category movies
   python3 crawler/events.py --url https://some-venue.ca/events
 """
-import argparse, collections, csv, hashlib, html, json, os, re, sys, time, unicodedata
+import argparse, collections, csv, gzip, hashlib, html, json, os, re, sys, time, unicodedata
 import urllib.request, urllib.parse
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,9 +43,11 @@ DEFAULT_CITY = next(iter(CITIES))  # the first city (Winnipeg): its event IDs pr
 # templates; {page} is replaced for paginated sources), venues for sources whose markup leaves them
 # out, its CinemaClock theatres, its Ticketmaster search, and its venue categorization rules.
 CITY = CITY_NAME = ""
+CITY_COUNTRY, CITY_COUNTRY_NAME, CITY_TOWNS = "", "", []  # "CA", "Canada", other names its events go by (Beyond 30)
 LOCAL_TZ = timezone.utc
 JSONLD_SOURCES, SOURCE_VENUES, CINEMACLOCK_THEATRES, TICKETMASTER_PLACE, CITY_VENUE_RULES = {}, {}, [], {}, []
 SILVERBIRD_CINEMAS = []  # [{"slug", "name", "address"}]: the city's Silverbird cinemas (Nigeria)
+FILMHOUSE_CINEMAS = []   # the city's Filmhouse cinemas, as Filmhouse names them ("Circle Mall", "Landmark")
 # "Otium - 11/22/26 @ 3:00 pm": the Cinematheque puts each showtime in the title
 SHOWTIME_SUFFIX_RE = re.compile(r" - \d{1,2}/\d{1,2}/\d{2,4} ?@ ?\d{1,2}:\d{2} ?[ap]m$", re.I)  # on clean()ed titles
 
@@ -52,13 +56,16 @@ def fetch(url, timeout=25):
     return fetch_final(url, timeout)[0]
 
 
-def fetch_final(url, timeout=25):
-    """(page, the URL it ended up at after any redirects)."""
+def fetch_final(url, timeout=25, compressed=False):
+    """(page, the URL it ended up at after any redirects). compressed: ask for gzip (for big pages)."""
     # listings link to addresses like /matambú-la-cumbia; escape anything that isn't ASCII
     url = urllib.parse.quote(url, safe=":/?#[]@!$&'()*+,;=%~")
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "en-CA,en"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read().decode(r.headers.get_content_charset() or "utf-8", "replace"), r.geturl()
+    headers = {"User-Agent": UA, "Accept-Language": "en-CA,en", **({"Accept-Encoding": "gzip"} if compressed else {})}
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=timeout) as r:
+        body = r.read()
+        if r.headers.get("Content-Encoding") == "gzip":
+            body = gzip.decompress(body)
+        return body.decode(r.headers.get_content_charset() or "utf-8", "replace"), r.geturl()
 
 
 def same_place(url, final):
@@ -374,6 +381,7 @@ def film_row(url, source, f, synopsis, synopsis_checked=None):
         "category_hint": "Movies & Film",
         "tag_hints": ["family"] if f["family"] else [],
         "showtimes": " | ".join(nxt),  # each cinema's next day with showings
+        "_info": f["info"],  # runtime, genres…: Filmhouse's films are matched to Silverbird's by it (fh_same_film)
         "_synopsis": synopsis, "_synopsis_checked": synopsis_checked,
         # the whole week, structured, for the database
         "_showtimes": [{"cinema": c, "address": f["cinemas"][c][0], "date": d.isoformat(),
@@ -466,6 +474,244 @@ def silverbird(delay):
                 f["cinemas"][cinema["name"]] = (cinema.get("address", ""), m["shows"])
     return [film_row(url, "Silverbird Cinemas", f, *film_synopsis(url, delay))
             for url, f in films.items() if f["cinemas"]]
+
+
+# ---------- Filmhouse (Nigeria): the films it's showing, without their times ----------
+# Filmhouse lists the films it's showing for automated readers (llms.txt) and each film's details on its page
+# (schema.org Movie), and robots.txt allows both. Its times aren't in its pages: they load from its ticketing
+# provider's API, which isn't public. So a film links to its Filmhouse page for times and tickets: a Showtime
+# with no times and a `url`. A film Silverbird also shows gets that link in Silverbird's row, not a row of its own.
+FILMHOUSE = "https://www.filmhouseng.com"
+FH_FILM_RE = re.compile(r"^- \[(.+?)\]\((https://www\.filmhouseng\.com/movies/[^)\s]+)\)(?::[ \t]*(.*))?$", re.M)
+FH_RUNTIME_RE = re.compile(r"\b(\d+h(?: \d+m)?|\d+m)\b")  # "2h 37m", in llms.txt and in a row's details
+FH_SMALL_WORDS = {"a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "into", "nor", "of", "on", "or",
+                  "the", "to", "vs", "with"}
+FH_ROMAN_RE = re.compile(r"^(I{1,3}|IV|VI{0,3}|IX|X{1,3}I{0,3})$")  # "ROCKY II", "TELE X ZIKORA"
+
+def fh_listing(text):
+    """(films [{title, url, info}], cinema names) from Filmhouse's llms.txt."""
+    sections = {s.split("\n", 1)[0].strip(): s for s in re.split(r"^## ", text, flags=re.M)[1:]}
+    films = [{"title": clean(t), "url": u, "info": clean(info)}
+             for t, u, info in FH_FILM_RE.findall(sections.get("Now showing", ""))]
+    return films, [clean(c) for c in re.findall(r"^- (.+)$", sections.get("Locations", ""), re.M)]
+
+def fh_title(t):
+    """Filmhouse writes most titles in capitals: "DUNE : PART THREE" -> "Dune: Part Three"."""
+    t = re.sub(r"\s+:", ":", t)
+    if re.search(r"[a-z]", t):
+        return t  # already as the film writes it ("Ramayana", "How to Rob a Bank")
+    words = []
+    for i, w in enumerate(t.split()):
+        if i and w.lower() in FH_SMALL_WORDS and not words[-1].endswith(":"):
+            words.append(w.lower())
+        elif FH_ROMAN_RE.match(w):
+            words.append(w)
+        else:
+            words.append("-".join(p[:1].upper() + p[1:].lower() for p in w.split("-")))  # "IN-LAW" -> "In-Law"
+    return " ".join(words)
+
+def fh_key(t):
+    return norm(t).replace(" ", "")
+
+def fh_same_film(rows, title, runtime):
+    """The row (Silverbird's) for the same film, or None: the same title, or the same title before one of them
+    adds a subtitle ("Agbara Nla" is Silverbird's "Agbara Nla: The Return") and the same running time."""
+    exact = [r for r in rows if fh_key(r["title"]) == fh_key(title)]
+    if exact:
+        return exact[0]
+    def main_title_match(r):
+        a, b = sorted([title, r["title"]], key=lambda s: ":" in s)  # b has the subtitle, if only one does
+        if ":" in a or ":" not in b or fh_key(b.split(":")[0]) != fh_key(a):
+            return False
+        theirs = FH_RUNTIME_RE.search(r.get("_info", ""))
+        return bool(runtime and theirs and theirs.group(1) == runtime)
+    loose = [r for r in rows if main_title_match(r)]
+    return loose[0] if len(loose) == 1 else None
+
+def fh_movie(url):
+    """A film page's schema.org Movie, or {} when there's none."""
+    for block in LDJSON_RE.findall(fetch(url)):
+        try:
+            d = json.loads(block.strip())
+        except json.JSONDecodeError:
+            continue
+        for item in (d if isinstance(d, list) else d.get("@graph", [d]) if isinstance(d, dict) else []):
+            if isinstance(item, dict) and item.get("@type") == "Movie":
+                return item
+    return {}
+
+def iso_runtime(v):
+    """"PT2H37M" -> "2h 37m"."""
+    m = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?", str(v or ""))
+    if not m or not any(m.groups()):
+        return ""
+    h, mins = int(m.group(1) or 0), int(m.group(2) or 0)
+    return " ".join(filter(None, [f"{h}h" if h else "", f"{mins}m" if mins else ""]))
+
+def fh_release(movie):
+    try:
+        return datetime.strptime(str(movie.get("datePublished", ""))[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+def fh_add_link(row, link):
+    """Adds Filmhouse to a Silverbird film's row (once)."""
+    if any(s["cinema"] == "Filmhouse" for s in row["_showtimes"]):
+        return
+    row["_showtimes"].append(link)
+    names = list(dict.fromkeys(s["cinema"] for s in row["_showtimes"]))
+    row["venue"], row["address"] = f"{len(names)} cinemas", ", ".join(names)
+    row["showtimes"] += " | Filmhouse: times on its site"
+
+def fh_row(f, title, runtime, movie, cinemas, today, link):
+    """A row for a film only Filmhouse shows: from llms.txt (`f`) and its page's Movie (`movie`, {} if it failed)."""
+    release = fh_release(movie)
+    start = max(today, release) if release else today
+    last = start + timedelta(days=(3 - start.weekday()) % 7)  # the Thursday its cinema week (Fri-Thu) ends
+    genres = movie.get("genre") or []
+    genres = [clean(g) for g in (genres if isinstance(genres, list) else [genres]) if g]
+    actors = [clean(a.get("name")) for a in movie.get("actor") or [] if isinstance(a, dict) and a.get("name")]
+    listed_genres = next((p for p in f["info"].split(" · ") if p and not FH_RUNTIME_RE.fullmatch(p)), "")
+    info = " · ".join(filter(None, [iso_runtime(movie.get("duration")) or runtime, ", ".join(genres) or listed_genres]))
+    rating = clean(movie.get("contentRating") or "")
+    details = " · ".join(filter(None, [info, f"Rated {rating}" if rating else "",
+                                       f"With {', '.join(actors[:3])}" if actors else ""]))
+    synopsis = clean(movie.get("description") or "")
+    # "Family" is also Filmhouse's genre for family dramas, some rated 15
+    family = bool({"Family", "Animation"} & set(genres)) and rating not in ("15", "16", "18")
+    return {
+        "title": title,
+        "start": start.isoformat(),
+        "end": last.isoformat() if last > start else "",
+        "venue": "Filmhouse",
+        "address": f"{len(cinemas)} cinemas in {CITY_NAME}" if len(cinemas) > 1 else "".join(cinemas),
+        "price": "",
+        "url": f["url"],
+        "source": "Filmhouse",
+        "_film": True,
+        "description": f"{details}. {synopsis}" if synopsis else details,
+        "image": image_url(movie.get("image")),  # the first is the poster (450x665), the second a banner
+        "category_hint": "Movies & Film",
+        "tag_hints": ["family"] if family else [],
+        "showtimes": "Filmhouse: times on its site",
+        "_showtimes": [link(f["url"], start.isoformat())],
+    }
+
+def filmhouse(delay, rows, today=None):
+    """Films showing at the city's Filmhouse cinemas. A film Silverbird also shows gets a Filmhouse link in its
+    row (one of `rows`); the others become rows of their own, which are returned."""
+    today = today or datetime.now(LOCAL_TZ).date()
+    films, listed = fh_listing(fetch(f"{FILMHOUSE}/llms.txt"))
+    time.sleep(delay)
+    if not films:
+        raise ValueError("no films in llms.txt")  # its layout changed: fail loudly rather than list nothing
+    cinemas = [c for c in FILMHOUSE_CINEMAS if c in listed] or FILMHOUSE_CINEMAS
+    link = lambda url, date: {"cinema": "Filmhouse", "address": ", ".join(cinemas), "date": date,
+                              "times": [], "tickets": [], "url": url}
+    silverbird_rows = [r for r in rows if r.get("source") == "Silverbird Cinemas"]
+    own = []
+    for f in films:
+        title = fh_title(f["title"])
+        runtime = FH_RUNTIME_RE.search(f["info"])
+        runtime = runtime.group(1) if runtime else ""
+        same = fh_same_film(silverbird_rows, title, runtime)
+        if same:
+            fh_add_link(same, link(f["url"], same["start"]))
+            continue
+        try:
+            movie = fh_movie(f["url"])
+        except Exception as ex:
+            print(f"  ! Filmhouse {f['url']}: {ex}", file=sys.stderr)
+            movie = {}
+        time.sleep(delay)
+        own.append(fh_row(f, title, runtime, movie, cinemas, today, link))
+    return own
+
+
+# ---------- Beyond 30: over-30s daytime clubbing, in cities worldwide ----------
+# One page lists every upcoming event, in schema.org markup (robots.txt allows crawling). Each city's crawl
+# keeps the events in its own town.
+BEYOND30 = "https://www.beyond30events.com/events/"
+BEYOND30_SOURCE = "Beyond 30"
+COUNTRY_NAMES = {"CA": "Canada", "NG": "Nigeria"}  # as Beyond 30 writes them; a requested city brings its own
+# "Time: 4PM – 9PM", "Time: 3:00 – 8:00pm": the start, and an am/pm on it or on the end
+B30_TIME_RE = re.compile(r"Time:\s*(\d{1,2})(?::(\d{2}))?\s*([ap])?\.?m?\.?\s*[–-]\s*\d{1,2}(?::\d{2})?\s*([ap])?", re.I)
+B30_SUFFIX_RE = re.compile(r"\s+[–-]\s+([^–-]+)$")  # " – WINNIPEG🕺🏽", " – VICTORIA, BC (SOLD OUT)"
+
+
+def ld_events(page):
+    """Every schema.org Event on a page."""
+    out = []
+    for block in LDJSON_RE.findall(page):
+        try:
+            out += list(iter_ld_events(json.loads(block.strip())))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def b30_here(ev):
+    """Whether an event is in this city: its town is the city or one of its other names, in its country."""
+    loc = first(ev.get("location"))
+    addr = loc.get("address") if isinstance(loc, dict) else None
+    if not isinstance(addr, dict):
+        return False
+    towns = {norm(CITY_NAME), *(norm(t) for t in CITY_TOWNS)}
+    return norm(addr.get("addressLocality", "")) in towns and addr.get("addressCountry") in (CITY_COUNTRY, CITY_COUNTRY_NAME)
+
+
+def b30_start(ev):
+    """When it starts, in the city's time. Beyond 30 writes UTC without saying so ("2027-01-30T21:00"), worked out
+    with outdated rules for a place whose clocks changed (Winnipeg: an hour out). The time its description
+    states wins when it's within two hours of that."""
+    start = datetime.fromisoformat(ev["startDate"][:16]).replace(tzinfo=timezone.utc).astimezone(LOCAL_TZ)
+    m = B30_TIME_RE.search(clean(ev.get("description")))
+    if not m:
+        return start
+    hour, minute, half = int(m.group(1)) % 12, int(m.group(2) or 0), (m.group(3) or m.group(4) or "p").lower()
+    stated = start.replace(hour=hour + (12 if half == "p" else 0), minute=minute)
+    return stated if abs(stated - start) <= timedelta(hours=2) else start
+
+
+def b30_price(ev, title):
+    offers = [o for o in (ev.get("offers") if isinstance(ev.get("offers"), list) else [ev.get("offers")]) if isinstance(o, dict)]
+    if "sold out" in title.lower() or (offers and all(str(o.get("availability", "")).endswith("SoldOut") for o in offers)):
+        return "Sold out", ""
+    prices = sorted({float(o["price"]) for o in offers if re.fullmatch(r"\d+(\.\d+)?", str(o.get("price", "")))} - {0.0})
+    currency = next((o["priceCurrency"] for o in offers if o.get("priceCurrency")), "")
+    if not prices:
+        return "", currency
+    return (f"{prices[0]:g}" if len(prices) == 1 else f"{prices[0]:g}–{prices[-1]:g}"), currency
+
+
+def b30_row(ev):
+    title = clean(ev.get("name"))
+    m = B30_SUFFIX_RE.search(title)
+    loc = first(ev.get("location")) or {}
+    addr = loc.get("address") or {}
+    if m and norm(addr.get("addressLocality", "")) in norm(m.group(1)):
+        title = title[:m.start()]  # " – WINNIPEG": the feed is the city's already
+    price, currency = b30_price(ev, clean(ev.get("name")))
+    country = addr.get("addressCountry") or ""
+    street = clean(addr.get("streetAddress"))
+    return {
+        "title": title, "start": b30_start(ev).strftime("%Y-%m-%dT%H:%M"), "end": "",
+        "venue": clean(loc.get("name")),
+        "address": street[:-len(country) - 2] if country and street.endswith(f", {country}") else street,
+        "price": price, "currency": currency, "url": first(ev.get("url")) or BEYOND30, "source": BEYOND30_SOURCE,
+        "description": clean(str(ev.get("description") or "").split("CONTACT US")[0]),
+        "image": image_url(ev.get("image")), "category_hint": "Nightlife & Parties",
+    }
+
+
+def beyond30():
+    """This city's Beyond 30 events, cancelled ones left out. Raises if the page lists none anywhere (moved or
+    redesigned), so the run reports it; none in this city is normal."""
+    found = ld_events(fetch_final(BEYOND30, compressed=True)[0])
+    if not found:
+        raise ValueError("no events on its events page")
+    return [b30_row(ev) for ev in found if b30_here(ev) and "cancel" not in clean(ev.get("name")).lower()
+            and not str(ev.get("eventStatus", "")).endswith("EventCancelled")]
 
 
 # ---------- AllEvents: the real seller behind a listing ----------
@@ -735,17 +981,34 @@ def crawl(a, now, end):
             report.append(f"  {label}: {len(got)} found")
         except Exception as ex:
             report.append(f"  ! {label} -> {ex}")
+    if FILMHOUSE_CINEMAS:  # after Silverbird: the films both show get a link in Silverbird's rows
+        try:
+            got = filmhouse(a.delay, events)
+            linked = sum(any(s["cinema"] == "Filmhouse" for s in e.get("_showtimes", [])) for e in events)
+            events += got
+            report.append(f"  Filmhouse films: {len(got)} found, and {linked} more linked from Silverbird's")
+        except Exception as ex:
+            report.append(f"  ! Filmhouse films -> {ex}")
+    try:  # every city: it's in many, and a city it isn't in finds none
+        got = beyond30()
+        events += got
+        report.append(f"  {BEYOND30_SOURCE}: {len(got)} found")
+    except Exception as ex:
+        report.append(f"  ! {BEYOND30_SOURCE} -> {ex}")
     return events, report
 
 
 def use_city(slug):
     """Point every city setting above at one city in shared/cities.json. A process crawls one city."""
     global CITY, CITY_NAME, LOCAL_TZ, JSONLD_SOURCES, SOURCE_VENUES, CINEMACLOCK_THEATRES, TICKETMASTER_PLACE
-    global CITY_VENUE_RULES, SILVERBIRD_CINEMAS
+    global CITY_VENUE_RULES, SILVERBIRD_CINEMAS, FILMHOUSE_CINEMAS, CITY_COUNTRY, CITY_COUNTRY_NAME, CITY_TOWNS
     c = CITIES[slug]
     k = c["crawl"]
     eb, ae = k.get("eventbrite"), k["allevents"]
     CITY, CITY_NAME, LOCAL_TZ = slug, c["name"], ZoneInfo(c["timezone"])
+    CITY_COUNTRY = c["country"]
+    CITY_COUNTRY_NAME = c.get("countryName") or COUNTRY_NAMES.get(c["country"], c["country"])
+    CITY_TOWNS = list(k.get("towns", []))  # the towns its events may be listed under, besides its name
     # AllEvents' usual pages, unless the city lists its own (in Lagos and Abuja only the city's home page
     # carries the events' data)
     JSONLD_SOURCES = k.get("allEventsPages") or {
@@ -767,6 +1030,7 @@ def use_city(slug):
     SOURCE_VENUES = {name: tuple(v) for name, v in k.get("sourceVenues", {}).items()}
     CINEMACLOCK_THEATRES = list(k.get("cinemaclock", []))
     SILVERBIRD_CINEMAS = list(k.get("silverbird", []))
+    FILMHOUSE_CINEMAS = list(k.get("filmhouse", []))
     TICKETMASTER_PLACE = dict(k.get("ticketmaster") or {})
     CITY_VENUE_RULES = [(cat, _rx(p)) for cat, p in k.get("venueRules", {}).items()]
     unknown = {cat for cat, _ in CITY_VENUE_RULES} - set(CATEGORIES)

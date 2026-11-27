@@ -6,11 +6,20 @@ export type SwipeState = (typeof SWIPE_STATES)[number];
 
 export const ACTIONS = [
   "view", "details", "save", "pass", "later", "unsave", "undo", "open_link", "tickets", "map", "share", "calendar",
+  "going",     // "I'm going"
+  "not_going", // took "I'm going" back
+  "attended",  // the answer to "Did you go?" (context.answer)
+  "rated",     // thumbs up or down after going (context.rating)
 ] as const;
 export type Action = (typeof ACTIONS)[number];
 
-export const VIAS = ["swipe", "button", "tap", "list"] as const;
+export const VIAS = ["swipe", "button", "tap", "list", "reminder"] as const; // reminder: opened from a notification
 export type Via = (typeof VIAS)[number];
+
+export const ANSWERS = ["yes", "no", "cancelled"] as const; // "Did you go?": Yes / No / It didn't happen
+export type Answer = (typeof ANSWERS)[number];
+export const RATINGS = ["up", "down"] as const;
+export type Rating = (typeof RATINGS)[number];
 
 export interface Showtime {
   cinema: string;
@@ -18,6 +27,7 @@ export interface Showtime {
   date: string;      // "2026-11-23"
   times: string[];   // "18:40", 24-hour, the city's time
   tickets: string[]; // for each time, in the same order: a link to buy that showing, or ""
+  url?: string;      // when the cinema's times aren't listed here (Filmhouse): its page for them; times is then []
 }
 
 /** A city the app covers (shared/cities.json), with how many events it has now. */
@@ -70,6 +80,19 @@ export interface CityRequestResponse {
   name: string;
 }
 
+/** "Suggest an event": a link to an event for one of our cities, reviewed by a person before it's listed. */
+export interface SuggestionRequest {
+  deviceId: string;
+  city: string;      // a City slug
+  url: string;       // the event's page: an Instagram post, a ticket page, the organizer's site
+  note?: string;     // anything the link doesn't say (500 characters at most)
+}
+
+export interface SuggestionResponse {
+  status: "received" | "listed"; // listed: it's already an event in that city's feed (eventId), and nothing was stored
+  eventId?: string;
+}
+
 /** Where to buy: the event's page when it sells tickets (Eventbrite, Ticketmaster), or the seller a listing
  *  names (AllEvents does); null when neither. Films are bought per showing (Showtime.tickets). */
 export interface Tickets {
@@ -99,6 +122,14 @@ export interface ApiEvent {
   tickets: Tickets | null;
   source: string;
   showtimes: Showtime[];      // films: the week, per cinema
+  popularity: Popularity | null; // null until enough people have shown interest
+}
+
+/** Counted across people who share their activity, and only shown once enough have (lib/stats.mts). */
+export interface Popularity {
+  interested: number;     // saved it, are going, or tapped tickets, calendar or share
+  going: number | null;   // null when too few to show
+  popular: boolean;       // among the city's most popular right now
 }
 
 export interface EventsResponse {
@@ -113,6 +144,8 @@ export interface InteractionContext {
   position?: number;                    // place in the stack (0 = top card)
   filter?: string;                      // the category chip in use
   restoredState?: SwipeState | null;    // for "undo": the state the event went back to
+  answer?: Answer;                      // for "attended"
+  rating?: Rating;                      // for "rated"
 }
 
 export interface InteractionItem {
@@ -127,6 +160,23 @@ export interface InteractionBatch {
   deviceId: string;
   items: InteractionItem[];
 }
+
+/** A browser's push subscription (PushSubscription.toJSON()). */
+export interface PushSubscriptionJson {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+}
+
+/** PUT /api/reminders: turn reminders on, or update which events they're for. */
+export interface RemindersRequest {
+  deviceId: string;
+  subscription: PushSubscriptionJson;
+  events: string[]; // the saved events still ahead
+}
+
+/** POST /api/tally: anonymous counts, no device ID. */
+export const TALLIES = ["consent_yes", "consent_no", "installed"] as const;
+export type Tally = (typeof TALLIES)[number];
 
 export interface StateResponse {
   deviceId: string;

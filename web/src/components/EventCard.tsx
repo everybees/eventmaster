@@ -24,6 +24,9 @@ export function EventCard({ event }: { event: ApiEvent }) {
             <span className="mon">{date.mon}</span>
           </span>
           {until && <span className="pill until">{until}</span>}
+          {event.popularity && (
+            <span className="pill pop">{event.popularity.popular ? "Popular" : `${event.popularity.interested} interested`}</span>
+          )}
         </div>
       </EventMedia>
       <div className="card-body">

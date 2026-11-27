@@ -1,4 +1,4 @@
-import type { Action, ApiEvent, InteractionContext, Showtime, SwipeState } from "../../shared/types.ts";
+import type { Action, ApiEvent, InteractionContext, Popularity, Showtime, SwipeState } from "../../shared/types.ts";
 import { DEFAULT_CITY } from "./cities.mts";
 import { ticketsFor } from "./tickets.mts";
 
@@ -56,12 +56,13 @@ export interface StateDoc {
 /**
  * A film's showings in the feed: each cinema's next `days` dates from `today` on. The app shows each cinema's
  * next day; two days cover a feed cached across midnight. A big city's week of showtimes would otherwise
- * make up most of the feed. GET /api/events/:id has them all.
+ * make up most of the feed. GET /api/events/:id has them all. A cinema whose times are on its own site (a link,
+ * no times) stays while the film does.
  */
 export function soonestShowtimes(showtimes: Showtime[], today: string, days = 2): Showtime[] {
   const taken = new Map<string, number>();
   return showtimes
-    .filter((s) => s.date >= today)
+    .filter((s) => s.date >= today || (!s.times.length && s.url))
     .toSorted((a, b) => a.date.localeCompare(b.date))
     .filter((s) => {
       const n = taken.get(s.cinema) ?? 0;
@@ -70,11 +71,26 @@ export function soonestShowtimes(showtimes: Showtime[], today: string, days = 2)
     });
 }
 
+/**
+ * Leaves out film rows a fresher row has replaced. A film can move between rows: Filmhouse's films get rows of their
+ * own only while Silverbird doesn't show them, else a link in Silverbird's (crawler/events.py). The old row stays
+ * active until it has missed two crawls (load_to_mongo.py), so for a while the film would be in the feed twice. A
+ * film row the last crawl didn't see is left out when one it did see has the same title, or the same title before
+ * a subtitle ("Agbara Nla" and "Agbara Nla: The Return").
+ */
+export function withoutReplacedFilms<T extends Pick<EventDoc, "title" | "showtimes" | "missedRuns">>(docs: T[]): T[] {
+  const key = (t: string) => t.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const keys = (t: string) => [key(t), key(t.split(":")[0])];
+  const films = docs.filter((d) => d.showtimes?.length);
+  const seen = new Set(films.filter((d) => !d.missedRuns).flatMap((d) => keys(d.title)));
+  return docs.filter((d) => !d.showtimes?.length || !d.missedRuns || !keys(d.title).some((k) => seen.has(k)));
+}
+
 /** "2026-11-24" in a time zone. */
 export const todayIn = (timeZone: string, now = new Date()) =>
   new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
 
-export function toApiEvent(d: EventDoc): ApiEvent {
+export function toApiEvent(d: EventDoc, popularity: Popularity | null = null): ApiEvent {
   return {
     id: d._id,
     city: d.city ?? DEFAULT_CITY,
@@ -99,5 +115,6 @@ export function toApiEvent(d: EventDoc): ApiEvent {
       ...s,
       tickets: s.tickets?.length === s.times.length ? s.tickets : s.times.map(() => ""),
     })),
+    popularity,
   };
 }
