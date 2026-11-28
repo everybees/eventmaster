@@ -1,26 +1,29 @@
-/* ---------- Poster Pop ----------
-   Bright yellow ground, white cards with thick black outlines and hard offset shadows, saturated
-   colour blocks. Every colour lives here; category colours are in categories.ts.
-   Contrast: --muted is 8:1 on --bg and 11:1 on --surface; white on --save is 5.9:1. */
+/* ---------- Meerkot ----------
+   The logo's colours (web/public/icons): a cream ground, white cards with thick espresso outlines and hard offset
+   shadows, the meerkat's orange. Every colour lives here; category colours are in categories.ts.
+   Contrast: --muted is 6.8:1 on --bg and 7.9:1 on --surface; white on --save is 4.6:1; --ink on --sticker
+   7.1:1. The logo's own orange (--brand) is too light for white text (3.8:1), so Save uses a deeper one. */
 :root {
-  --bg: #FFE14D;         /* canola yellow */
+  --bg: #FCEDD5;         /* the meerkat's cream */
   --surface: #FFFFFF;
-  --ink: #111111;        /* text, outlines, shadows */
-  --text-2: #262626;
-  --muted: #3D3D3D;
-  --save: #2F5BFF;
-  --details: #C9B8FF;
-  --later: #FF9A4D;
-  --sticker: #FF5A36;    /* the date badge */
-  --card-behind: #FF7AB8; /* the card at the back of the stack */
+  --ink: #3C1A0D;        /* espresso, as in the wordmark: text, outlines, shadows */
+  --text-2: #4A2A1C;
+  --muted: #6B4A3A;
+  --brand: #D65F0A;      /* the logo's orange */
+  --save: #C2530A;
+  --details: #A9D4EE;    /* sky */
+  --later: #F4B63F;      /* sun */
+  --sticker: #F39A4E;    /* apricot: the date badge, Get tickets */
+  --card-behind: var(--brand); /* the card at the back of the stack */
   --danger: #B91C1C;
-  --divider: #E5E5E5;    /* hairlines inside a card */
+  --divider: #EFDCC6;    /* hairlines inside a card */
+  --scrim: rgba(60, 26, 13, 0.6); /* behind sheets and details */
 
   --line: 2px solid var(--ink);
   --line-thick: 2.5px solid var(--ink);
   --shadow: 3px 3px 0 var(--ink);
   --shadow-lg: 6px 6px 0 var(--ink);
-  --display: "Bricolage Grotesque Variable", "Inter Variable", system-ui, sans-serif;
+  --display: "Fredoka Variable", "Inter Variable", system-ui, sans-serif;
   color-scheme: light;
 }
 
@@ -65,7 +68,11 @@ h1, h2, h3, p { margin: 0; }
   gap: 12px;
   padding: max(20px, env(safe-area-inset-top)) 16px 4px 20px;
 }
-.header h1 { font-family: var(--display); font-size: clamp(24px, 7.5vw, 30px); line-height: 1; font-weight: 800; letter-spacing: -0.03em; }
+.header h1 { font-family: var(--display); font-size: clamp(24px, 7.5vw, 30px); line-height: 1; font-weight: 700; letter-spacing: -0.01em; }
+.header-title { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.header-title > div { min-width: 0; }
+.brand { flex: none; display: block; width: 44px; height: 44px; }
+@media (max-width: 359px) { .brand { display: none; } } /* a long city name needs the room */
 .subtitle { margin-top: 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
 .city-btn {
   display: inline-flex;
@@ -267,6 +274,16 @@ h1, h2, h3, p { margin: 0; }
   background: var(--surface);
   box-shadow: var(--shadow-lg);
   text-align: center;
+  overflow: hidden;
+  container-type: size;
+}
+/* the meerkat stands at the bottom of the card, the words centred in the room above it. It shrinks with the
+   card (cqh: the card's inner height) and steps aside when the card is too short for both. */
+.empty > :first-child { margin-top: auto; }
+.empty-mascot { flex: none; width: min(150px, 34cqh); height: auto; margin: auto 0 -24px; pointer-events: none; }
+@container (max-height: 330px) {
+  .empty-mascot { display: none; }
+  .empty > :first-child { margin-top: 0; }
 }
 .empty h2 { font-family: var(--display); font-size: 26px; font-weight: 800; letter-spacing: -0.02em; }
 .empty p { font-size: 14px; line-height: 1.45; color: var(--muted); }
@@ -293,7 +310,6 @@ h1, h2, h3, p { margin: 0; }
 .action.big { width: 66px; }
 .action.big button { width: 64px; height: 64px; margin-top: 0; border: var(--line-thick); border-radius: 32px; box-shadow: 4px 4px 0 var(--ink); }
 .action.save button { background: var(--save); color: var(--surface); }
-.action.details button { background: var(--details); }
 .action.later button { background: var(--later); }
 .action button:disabled { opacity: 0.45; box-shadow: none; cursor: default; }
 
@@ -325,8 +341,9 @@ h1, h2, h3, p { margin: 0; }
 }
 .tab[aria-current="page"] { background: var(--ink); color: var(--surface); }
 
-/* ---------- details (a native modal <dialog>) ---------- */
-.details {
+/* ---------- details (a native modal <dialog>) ----------
+   dialog.details, not .details: anything else with a `details` class would be hidden by these rules */
+dialog.details {
   position: fixed;
   inset: 0;
   display: flex;
@@ -342,8 +359,8 @@ h1, h2, h3, p { margin: 0; }
   color: var(--ink);
 }
 /* `display: flex` above would otherwise show a closed dialog too; only an open one is visible */
-.details:not([open]) { display: none; }
-.details::backdrop { background: rgba(17, 17, 17, 0.6); }
+dialog.details:not([open]) { display: none; }
+dialog.details::backdrop { background: var(--scrim); }
 .details-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .hero { position: relative; height: 240px; overflow: hidden; border-bottom: var(--line-thick); }
 .hero .media-poster { top: 16px; left: 50%; right: auto; translate: -50% 0; width: 136px; height: 204px; border-radius: 12px; }
@@ -417,7 +434,7 @@ h1, h2, h3, p { margin: 0; }
 }
 .link-btn.wide { grid-column: 1 / -1; background: var(--bg); }
 .buy { display: flex; flex-direction: column; gap: 6px; }
-.link-btn.ticket { height: 52px; background: var(--sticker); font-size: 16px; } /* ink on --sticker: 6:1 */
+.link-btn.ticket { height: 52px; background: var(--sticker); font-size: 16px; } /* ink on --sticker: 7.1:1 */
 .fine { font-size: 12px; color: var(--muted); text-align: center; }
 .bottom-bar { flex: none; display: flex; gap: 12px; padding: 14px 16px calc(16px + env(safe-area-inset-bottom)); border-top: var(--line-thick); background: var(--surface); }
 .bar-btn {
@@ -542,7 +559,7 @@ h1, h2, h3, p { margin: 0; }
 }
 .sheet:not([open]) { display: none; }
 .sheet[open] { display: flex; flex-direction: column; }
-.sheet::backdrop { background: rgba(17, 17, 17, 0.6); }
+.sheet::backdrop { background: var(--scrim); }
 .sheet-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding: 20px 20px calc(20px + env(safe-area-inset-bottom)); }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .sheet-head h2 { font-family: var(--display); font-size: 26px; line-height: 1.1; font-weight: 800; letter-spacing: -0.02em; }

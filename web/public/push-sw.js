@@ -7,7 +7,7 @@ self.addEventListener("push", (event) => {
   } catch {
     data = { title: event.data ? event.data.text() : "" };
   }
-  event.waitUntil(self.registration.showNotification(data.title || "Winnipeg Events", {
+  event.waitUntil(self.registration.showNotification(data.title || "Meerkot", {
     body: data.body || "",
     tag: data.tag,            // the same reminder twice replaces, rather than stacks
     icon: "/icons/icon-192.png",

@@ -3,6 +3,7 @@ import type { Answer, ApiEvent, Rating } from "../../../shared/types.ts";
 import { styleFor } from "../categories.ts";
 import { cityName } from "../city.ts";
 import { dateParts, endedAt } from "../format.ts";
+import { Brand } from "./Brand.tsx";
 import { IconX } from "./icons.tsx";
 
 /** How long after an event "Did you go?" is asked (the server keeps events this long to record the answer). */
@@ -53,11 +54,14 @@ export function Saved(p: Props) {
   return (
     <div className="saved">
       <header className="header">
-        <div>
-          <h1>Saved</h1>
-          <p className="subtitle">
-            {ahead.length} coming up{goingCount ? `, going to ${goingCount}` : ""}
-          </p>
+        <div className="header-title">
+          <Brand />
+          <div>
+            <h1>Saved</h1>
+            <p className="subtitle">
+              {ahead.length} coming up{goingCount ? `, going to ${goingCount}` : ""}
+            </p>
+          </div>
         </div>
       </header>
 

@@ -1,4 +1,4 @@
-# Winnipeg Events
+# Meerkot
 
 Swipe through what's on in your city: concerts, films, markets, theatre and more, gathered from
 AllEvents, Ticketmaster, CinemaClock (Cineplex, Landmark and independent cinemas), Beyond 30 (over-30s daytime

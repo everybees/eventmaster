@@ -29,14 +29,14 @@ export function PrivacyNotice({ onClose }: { onClose(): void }) {
         <p className="fine">Last updated {UPDATED}</p>
 
         <p>
-          Winnipeg Events shows what’s on in your city. This notice explains what the app collects, why, who else
+          Meerkot shows what’s on in your city. This notice explains what the app collects, why, who else
           handles it, and how you control it. There are no accounts: we never ask for your name, email address or
           phone number.
         </p>
 
         <Section title="Who we are">
           <p>
-            {OPERATOR || "The team behind Winnipeg Events"} runs this app and is responsible for your data.
+            {OPERATOR || "The team behind Meerkot"} runs this app and is responsible for your data.
             {write && <> For questions or requests, write to {write}.</>}
           </p>
         </Section>

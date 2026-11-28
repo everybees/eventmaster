@@ -5,11 +5,12 @@ import { CATEGORY_ORDER, styleFor } from "./categories.ts";
 import {
   cachedCities, cityName, forgetRequest, rememberCities, rememberRequest, requestedCities, saveCity, savedCity,
 } from "./city.ts";
+import { Brand, Mascot } from "./components/Brand.tsx";
 import { CardStack, type Decision, type StackHandle } from "./components/CardStack.tsx";
 import { CityPicker } from "./components/CityPicker.tsx";
 import { Details } from "./components/Details.tsx";
 import {
-  IconBookmark, IconChevronDown, IconClock, IconCompass, IconInfo, IconPlus, IconRefresh, IconUndo, IconX,
+  IconBookmark, IconChevronDown, IconClock, IconCompass, IconPlus, IconRefresh, IconUndo, IconX,
 } from "./components/icons.tsx";
 import { ConsentBanner, PrivacyNotice } from "./components/Privacy.tsx";
 import { InstallPrompt, RemindersPrompt } from "./components/Prompts.tsx";
@@ -329,13 +330,16 @@ export function App() {
       {tab === "discover" ? (
         <div className="screen">
           <header className="header">
-            <div>
-              <h1>
-                <button type="button" className="city-btn" aria-haspopup="dialog" onClick={() => setPicking(true)}>
-                  {city ? cityName(city) : "Pick a city"} <IconChevronDown size={22} weight={2.5} />
-                </button>
-              </h1>
-              <p className="subtitle">{!city ? "" : events ? `This month · ${queue.length} events to go` : "Loading…"}</p>
+            <div className="header-title">
+              <Brand />
+              <div>
+                <h1>
+                  <button type="button" className="city-btn" aria-haspopup="dialog" onClick={() => setPicking(true)}>
+                    {city ? cityName(city) : "Pick a city"} <IconChevronDown size={22} weight={2.5} />
+                  </button>
+                </h1>
+                <p className="subtitle">{!city ? "" : events ? `This month · ${queue.length} events to go` : "Loading…"}</p>
+              </div>
             </div>
             <div className="header-actions">
               <button type="button" className="icon-btn" aria-label="Suggest an event" aria-haspopup="dialog"
@@ -369,7 +373,6 @@ export function App() {
           <div className="actions">
             <ActionButton label="Undo" onClick={undo} disabled={store.history.length === 0}><IconUndo /></ActionButton>
             <ActionButton label="Pass" big onClick={() => stack.current?.fling("pass")} disabled={noCards}><IconX size={28} weight={2.25} /></ActionButton>
-            <ActionButton label="Details" tone="details" onClick={() => top && openDetails(top, "button")} disabled={noCards}><IconInfo /></ActionButton>
             <ActionButton label="Save" big tone="save" onClick={() => stack.current?.fling("save")} disabled={noCards}><IconBookmark size={26} weight={2.25} /></ActionButton>
             <ActionButton label="Later" tone="later" onClick={() => stack.current?.fling("later")} disabled={noCards}><IconClock /></ActionButton>
           </div>
@@ -453,6 +456,7 @@ function NoEvents({ onReload, onSuggest }: { onReload(): void; onSuggest(): void
           <button type="button" className="bar-btn" onClick={onReload}>Reload</button>
         </div>
         <SuggestLink onClick={onSuggest} />
+        <Mascot />
       </div>
     </div>
   );
@@ -475,6 +479,7 @@ function EmptyState({ category, hasSaved, onBrowseAll, onRestart, onSuggest }: {
           {onRestart && <button type="button" className="bar-btn" onClick={onRestart}>Start over</button>}
         </div>
         <SuggestLink onClick={onSuggest} />
+        <Mascot />
       </div>
     </div>
   );
@@ -489,7 +494,7 @@ function SuggestLink({ onClick }: { onClick(): void }) {
 }
 
 function ActionButton({ label, big, tone, disabled, onClick, children }: {
-  label: string; big?: boolean; tone?: "save" | "details" | "later"; disabled?: boolean;
+  label: string; big?: boolean; tone?: "save" | "later"; disabled?: boolean;
   onClick(): void; children: ReactNode;
 }) {
   return (

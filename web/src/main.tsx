@@ -5,7 +5,7 @@ import { watchInstall } from "./install.ts";
 import { startTracking } from "./track.ts";
 // fonts served with the app, not from Google: no third party sees each visit, and they work offline
 import "@fontsource-variable/inter";
-import "@fontsource-variable/bricolage-grotesque/opsz.css";
+import "@fontsource-variable/fredoka"; // rounded like the Meerkot wordmark: headings, dates
 import "./styles.css";
 
 startTracking();

@@ -100,13 +100,14 @@ export default defineConfig(({ mode }) => {
       netlifyFunctionsDev(),
       VitePWA({
         registerType: "autoUpdate",
-        includeAssets: ["favicon.svg"],
+        // the logo (web/public/icons): precached, so the header and empty card work offline
+        includeAssets: ["icons/icon.svg", "icons/mascot.svg", "icons/apple-touch-icon.png"],
         manifest: {
-          name: "Winnipeg Events",
-          short_name: "WPG Events",
-          description: "Swipe through what's on in Winnipeg",
-          theme_color: "#FFE14D",
-          background_color: "#FFE14D",
+          name: "Meerkot",
+          short_name: "Meerkot",
+          description: "Swipe through what's on in your city",
+          theme_color: "#FCEDD5",
+          background_color: "#FCEDD5",
           display: "standalone",
           start_url: "/",
           // installed on Android, the app is in the share sheet: sharing a post or page to it suggests it as an event
